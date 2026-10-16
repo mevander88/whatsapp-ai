@@ -43,7 +43,10 @@ async function main() {
     agent,
     historyLimit: config.historyLimit,
     sessionPath: config.sessionPath,
-    logLevel: config.logLevel
+    logLevel: config.logLevel,
+    connectTimeoutMs: config.whatsappConnectTimeoutMs,
+    maxReconnectAttempts: config.whatsappMaxReconnectAttempts,
+    whatsappVersion: config.whatsappVersion
   })
 
   await bot.start()

@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { loadConfig, positiveInteger } = require('../src/config')
+const { loadConfig, positiveInteger, whatsappVersion } = require('../src/config')
 
 test('loadConfig menolak konfigurasi wajib yang kosong', () => {
   assert.throws(() => loadConfig({}), /DEEPSEEK_API_KEY, DATABASE_URL/)
@@ -17,6 +17,8 @@ test('loadConfig membaca konfigurasi wajib dan nilai bawaan', () => {
   assert.equal(config.deepseekModel, 'deepseek-flash')
   assert.deepEqual(config.ownerIds, [])
   assert.equal(config.approvalTtlMinutes, 10)
+  assert.equal(config.whatsappConnectTimeoutMs, 30_000)
+  assert.equal(config.whatsappMaxReconnectAttempts, 5)
 })
 
 test('loadConfig menormalkan nomor pemilik dan daftar izin', () => {
@@ -33,4 +35,9 @@ test('loadConfig menormalkan nomor pemilik dan daftar izin', () => {
 
 test('positiveInteger menolak nilai yang tidak valid', () => {
   assert.throws(() => positiveInteger('0', 10, 'LIMIT'), /bilangan bulat positif/)
+})
+
+test('whatsappVersion membaca override tiga angka', () => {
+  assert.deepEqual(whatsappVersion('2, 3000, 123'), [2, 3000, 123])
+  assert.throws(() => whatsappVersion('2,3000'), /tiga angka/)
 })
