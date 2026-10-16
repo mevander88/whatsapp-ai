@@ -20,6 +20,17 @@ function createDatabase(connectionString) {
       ON messages (conversation_id, created_at DESC, id DESC)
     `)
 
+    // Pesan lama dianggap sudah selesai; hanya pesan baru yang memakai alur pengiriman ini.
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivery_status TEXT NOT NULL DEFAULT 'sent'`)
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_payload JSONB`)
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_history_text TEXT`)
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivery_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`)
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS messages_ready_delivery_idx
+      ON messages (created_at)
+      WHERE role = 'user' AND delivery_status = 'ready'
+    `)
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS pending_agent_actions (
         token TEXT PRIMARY KEY,
@@ -50,22 +61,116 @@ function createDatabase(connectionString) {
 
   async function saveIncomingMessage({ conversationId, messageId, content }) {
     const result = await pool.query(
-      `INSERT INTO messages (conversation_id, external_message_id, role, content)
-       VALUES ($1, $2, 'user', $3)
+      `INSERT INTO messages (conversation_id, external_message_id, role, content, delivery_status)
+       VALUES ($1, $2, 'user', $3, 'processing')
        ON CONFLICT (external_message_id) DO NOTHING
        RETURNING id`,
       [conversationId, messageId, content]
     )
 
+    if (result.rowCount === 1) return { status: 'new' }
+
+    const existing = await pool.query(
+      `SELECT delivery_status, reply_payload
+       FROM messages
+       WHERE conversation_id = $1 AND external_message_id = $2 AND role = 'user'`,
+      [conversationId, messageId]
+    )
+    if (existing.rowCount !== 1) return { status: 'duplicate' }
+    return {
+      status: existing.rows[0].delivery_status,
+      response: existing.rows[0].reply_payload
+    }
+  }
+
+  async function prepareReply({ conversationId, messageId, response, historyText }) {
+    const result = await pool.query(
+      `UPDATE messages
+       SET delivery_status = 'ready', reply_payload = $3::jsonb,
+           reply_history_text = $4, delivery_updated_at = NOW()
+       WHERE conversation_id = $1 AND external_message_id = $2
+         AND role = 'user' AND delivery_status = 'processing'
+       RETURNING id`,
+      [conversationId, messageId, JSON.stringify(response), historyText]
+    )
     return result.rowCount === 1
   }
 
-  async function saveAssistantMessage({ conversationId, content }) {
+  async function replacePreparedReply({ conversationId, messageId, response, historyText }) {
     await pool.query(
-      `INSERT INTO messages (conversation_id, role, content)
-       VALUES ($1, 'assistant', $2)`,
-      [conversationId, content]
+      `UPDATE messages
+       SET reply_payload = $3::jsonb, reply_history_text = $4, delivery_updated_at = NOW()
+       WHERE conversation_id = $1 AND external_message_id = $2
+         AND role = 'user' AND delivery_status = 'ready'`,
+      [conversationId, messageId, JSON.stringify(response), historyText]
     )
+  }
+
+  async function markReplySent({ conversationId, messageId }) {
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      const result = await client.query(
+        `UPDATE messages
+         SET delivery_status = 'sent', delivery_updated_at = NOW()
+         WHERE conversation_id = $1 AND external_message_id = $2
+           AND role = 'user' AND delivery_status = 'ready'
+         RETURNING reply_history_text`,
+        [conversationId, messageId]
+      )
+      if (result.rowCount === 1) {
+        await client.query(
+          `INSERT INTO messages (conversation_id, role, content)
+           VALUES ($1, 'assistant', $2)`,
+          [conversationId, result.rows[0].reply_history_text]
+        )
+      }
+      await client.query('COMMIT')
+      return result.rowCount === 1
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  async function getPendingReplies() {
+    const result = await pool.query(
+      `SELECT conversation_id, external_message_id, reply_payload
+       FROM messages
+       WHERE role = 'user' AND delivery_status = 'ready'
+       ORDER BY created_at ASC`
+    )
+    return result.rows.map((row) => ({
+      conversationId: row.conversation_id,
+      messageId: row.external_message_id,
+      response: row.reply_payload
+    }))
+  }
+
+  async function getReplyState({ conversationId, messageId }) {
+    const result = await pool.query(
+      `SELECT delivery_status, reply_payload
+       FROM messages
+       WHERE conversation_id = $1 AND external_message_id = $2 AND role = 'user'`,
+      [conversationId, messageId]
+    )
+    if (result.rowCount !== 1) return null
+    return { status: result.rows[0].delivery_status, response: result.rows[0].reply_payload }
+  }
+
+  async function recoverInterruptedMessages(errorResponse, includeRecent = false) {
+    const result = await pool.query(
+      `UPDATE messages
+       SET delivery_status = 'ready', reply_payload = $1::jsonb,
+           reply_history_text = $2, delivery_updated_at = NOW()
+       WHERE role = 'user' AND delivery_status = 'processing'
+         AND ($3::boolean OR delivery_updated_at < NOW() - INTERVAL '2 minutes')
+       RETURNING id`,
+      [JSON.stringify(errorResponse), errorResponse.text, includeRecent]
+    )
+    return result.rowCount
   }
 
   async function getConversationHistory(conversationId, limit) {
@@ -139,7 +244,12 @@ function createDatabase(connectionString) {
   return {
     initialize,
     saveIncomingMessage,
-    saveAssistantMessage,
+    prepareReply,
+    replacePreparedReply,
+    markReplySent,
+    getPendingReplies,
+    getReplyState,
+    recoverInterruptedMessages,
     getConversationHistory,
     createPendingAction,
     resolvePendingAction,

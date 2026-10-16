@@ -4,6 +4,7 @@ const { createDeepSeekClient } = require('./src/deepseek')
 const { createWhatsAppBot } = require('./src/whatsapp')
 const { createAgent } = require('./src/agent')
 const { createComputerTools } = require('./src/computer-tools')
+const { createCamera } = require('./src/camera')
 const { createResponseTools } = require('./src/response-tools')
 const { createPathPolicy } = require('./src/security')
 
@@ -22,9 +23,16 @@ async function main() {
   })
 
   const pathPolicy = createPathPolicy(config.allowedPaths)
+  const camera = createCamera({
+    deviceName: config.cameraDeviceName,
+    ffmpegPath: config.cameraFfmpegPath,
+    maxMediaBytes: config.maxMediaBytes
+  })
   const computerTools = createComputerTools({
     pathPolicy,
     allowedApps: config.allowedApps,
+    allowedCmdCommands: config.allowedCmdCommands,
+    camera,
     maxFileBytes: config.maxFileBytes,
     maxMediaBytes: config.maxMediaBytes
   })
@@ -46,7 +54,8 @@ async function main() {
     logLevel: config.logLevel,
     connectTimeoutMs: config.whatsappConnectTimeoutMs,
     maxReconnectAttempts: config.whatsappMaxReconnectAttempts,
-    whatsappVersion: config.whatsappVersion
+    whatsappVersion: config.whatsappVersion,
+    cleanupGeneratedFile: camera.cleanup
   })
 
   await bot.start()

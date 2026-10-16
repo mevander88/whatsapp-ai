@@ -11,7 +11,8 @@ const BLOCKED_NAMES = new Set([
 const BLOCKED_EXTENSIONS = new Set(['.key', '.pem', '.p12', '.pfx'])
 
 function normalizeJid(value) {
-  return typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (typeof value !== 'string') return ''
+  return value.trim().toLowerCase().replace(/^([^@:]+):\d+@(s\.whatsapp\.net|lid)$/, '$1@$2')
 }
 
 function findOwnerId(senderIds, ownerIds) {
