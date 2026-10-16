@@ -42,3 +42,30 @@ test('menolak respons DeepSeek yang gagal', async () => {
 
   await assert.rejects(() => client.reply([]), /status 429/)
 })
+
+test('chat membaca tool call terstruktur dari DeepSeek', async () => {
+  const client = createDeepSeekClient({
+    apiKey: 'token',
+    apiUrl: 'https://example.test/chat',
+    model: 'deepseek-flash',
+    systemPrompt: 'Prompt',
+    timeoutMs: 1_000,
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            tool_calls: [{
+              id: 'call-1',
+              function: { name: 'get_system_info', arguments: '{"detail":true}' }
+            }]
+          }
+        }]
+      })
+    })
+  })
+
+  assert.deepEqual(await client.chat([]), {
+    toolCall: { id: 'call-1', name: 'get_system_info', arguments: { detail: true } }
+  })
+})

@@ -14,8 +14,98 @@ function extractText(message) {
   const content = normalizeMessageContent(message?.message)
   if (!content) return null
 
-  const text = content.conversation || content.extendedTextMessage?.text
+  let interactiveId
+  const paramsJson = content.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson
+  if (paramsJson) {
+    try {
+      const params = JSON.parse(paramsJson)
+      interactiveId = params.id || params.row_id || params.selected_id
+    } catch {
+      interactiveId = null
+    }
+  }
+
+  const text =
+    content.conversation ||
+    content.extendedTextMessage?.text ||
+    content.imageMessage?.caption ||
+    content.videoMessage?.caption ||
+    content.documentMessage?.caption ||
+    content.buttonsResponseMessage?.selectedButtonId ||
+    content.templateButtonReplyMessage?.selectedId ||
+    content.listResponseMessage?.singleSelectReply?.selectedRowId ||
+    interactiveId
   return typeof text === 'string' && text.trim() ? text.trim() : null
+}
+
+function senderIds(message) {
+  return [
+    message?.key?.remoteJid,
+    message?.key?.remoteJidAlt,
+    message?.key?.participant,
+    message?.key?.participantAlt
+  ].filter(Boolean)
+}
+
+function responseFallbackText(response) {
+  if (response.fallbackText) return `${response.text}\n\n${response.fallbackText}`
+  if (response.type === 'buttons') return `${response.text}\n\n${response.options.map((item) => `${item.label}: ${item.id}`).join('\n')}`
+  if (response.type === 'list') return `${response.text}\n\n${response.options.map((item) => `- ${item.title}: ${item.id}`).join('\n')}`
+  if (response.type === 'poll') return `${response.question}\n\n${response.options.map((item) => `- ${item}`).join('\n')}`
+  return response.text || response.caption || 'Respons tidak dapat ditampilkan.'
+}
+
+function buildMessageContent(response) {
+  switch (response.type) {
+    case 'text':
+      return { text: response.text }
+    case 'buttons':
+      return {
+        text: response.fallbackText ? `${response.text}\n\n${response.fallbackText}` : response.text,
+        footer: response.footer,
+        buttons: response.options.map((item) => ({
+          buttonId: item.id,
+          buttonText: { displayText: item.label }
+        }))
+      }
+    case 'list':
+      return {
+        title: response.title,
+        text: response.text,
+        buttonText: response.buttonText,
+        sections: [{
+          title: response.title,
+          rows: response.options.map((item) => ({
+            rowId: item.id,
+            title: item.title,
+            description: item.description
+          }))
+        }]
+      }
+    case 'poll':
+      return {
+        poll: {
+          name: response.question,
+          values: response.options,
+          selectableCount: response.selectableCount,
+          toAnnouncementGroup: false
+        }
+      }
+    case 'image':
+    case 'video':
+      return { [response.type]: { url: response.filePath }, caption: response.caption }
+    case 'audio':
+      return { audio: { url: response.filePath }, mimetype: 'audio/mp4' }
+    case 'document':
+      return {
+        document: { url: response.filePath },
+        fileName: response.fileName,
+        caption: response.caption,
+        mimetype: 'application/octet-stream'
+      }
+    default:
+      throw new Error('Jenis respons WhatsApp tidak didukung')
+  }
 }
 
 function disconnectStatusCode(error) {
@@ -37,7 +127,7 @@ function createChatQueue() {
   }
 }
 
-function createWhatsAppBot({ database, ai, historyLimit, sessionPath, logLevel = 'info' }) {
+function createWhatsAppBot({ database, agent, historyLimit, sessionPath, logLevel = 'info' }) {
   const logger = pino({ level: logLevel })
   const enqueue = createChatQueue()
   let socket
@@ -68,9 +158,23 @@ function createWhatsAppBot({ database, ai, historyLimit, sessionPath, logLevel =
       }
 
       const history = await database.getConversationHistory(chatId, historyLimit)
-      const answer = await ai.reply(history)
-      await database.saveAssistantMessage({ conversationId: chatId, content: answer })
-      await socket.sendMessage(chatId, { text: answer }, { quoted: message })
+      const response = await agent.handle({
+        chatId,
+        senderIds: senderIds(message),
+        text,
+        history
+      })
+      await database.saveAssistantMessage({
+        conversationId: chatId,
+        content: agent.historyText(response)
+      })
+
+      try {
+        await socket.sendMessage(chatId, buildMessageContent(response), { quoted: message })
+      } catch (formatError) {
+        logger.warn({ err: formatError, chatId, responseType: response.type }, 'Format respons gagal, menggunakan teks')
+        await socket.sendMessage(chatId, { text: responseFallbackText(response) }, { quoted: message })
+      }
     } catch (error) {
       logger.error({ err: error, messageId, chatId }, 'Gagal memproses pesan')
       try {
@@ -165,8 +269,11 @@ function createWhatsAppBot({ database, ai, historyLimit, sessionPath, logLevel =
 
 module.exports = {
   ERROR_REPLY,
+  buildMessageContent,
   createChatQueue,
   createWhatsAppBot,
   disconnectStatusCode,
-  extractText
+  extractText,
+  responseFallbackText,
+  senderIds
 }

@@ -2,6 +2,10 @@ const { loadConfig } = require('./src/config')
 const { createDatabase } = require('./src/database')
 const { createDeepSeekClient } = require('./src/deepseek')
 const { createWhatsAppBot } = require('./src/whatsapp')
+const { createAgent } = require('./src/agent')
+const { createComputerTools } = require('./src/computer-tools')
+const { createResponseTools } = require('./src/response-tools')
+const { createPathPolicy } = require('./src/security')
 
 async function main() {
   const config = loadConfig()
@@ -17,9 +21,26 @@ async function main() {
     timeoutMs: config.aiTimeoutMs
   })
 
+  const pathPolicy = createPathPolicy(config.allowedPaths)
+  const computerTools = createComputerTools({
+    pathPolicy,
+    allowedApps: config.allowedApps,
+    maxFileBytes: config.maxFileBytes,
+    maxMediaBytes: config.maxMediaBytes
+  })
+  const responseTools = createResponseTools()
+  const agent = createAgent({
+    ai,
+    database,
+    computerTools,
+    responseTools,
+    ownerIds: config.ownerIds,
+    approvalTtlMinutes: config.approvalTtlMinutes
+  })
+
   const bot = createWhatsAppBot({
     database,
-    ai,
+    agent,
     historyLimit: config.historyLimit,
     sessionPath: config.sessionPath,
     logLevel: config.logLevel

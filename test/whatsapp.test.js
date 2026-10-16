@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { createChatQueue, extractText } = require('../src/whatsapp')
+const { buildMessageContent, createChatQueue, extractText } = require('../src/whatsapp')
 
 test('extractText membaca pesan teks biasa dan extended text', () => {
   assert.equal(extractText({ message: { conversation: ' Halo ' } }), 'Halo')
@@ -8,7 +8,29 @@ test('extractText membaca pesan teks biasa dan extended text', () => {
     extractText({ message: { extendedTextMessage: { text: 'Balasan' } } }),
     'Balasan'
   )
-  assert.equal(extractText({ message: { imageMessage: { caption: 'diabaikan' } } }), null)
+  assert.equal(extractText({ message: { imageMessage: { caption: ' Jelaskan gambar ' } } }), 'Jelaskan gambar')
+  assert.equal(
+    extractText({ message: { buttonsResponseMessage: { selectedButtonId: 'agent:approve:abc' } } }),
+    'agent:approve:abc'
+  )
+})
+
+test('buildMessageContent menyusun tombol dan media sesuai format Baileys', () => {
+  assert.deepEqual(buildMessageContent({
+    type: 'buttons',
+    text: 'Pilih',
+    footer: 'Agent',
+    options: [{ id: 'yes', label: 'Ya' }]
+  }), {
+    text: 'Pilih',
+    footer: 'Agent',
+    buttons: [{ buttonId: 'yes', buttonText: { displayText: 'Ya' } }]
+  })
+
+  assert.deepEqual(buildMessageContent({ type: 'image', filePath: 'C:\\tmp\\foto.jpg', caption: 'Foto' }), {
+    image: { url: 'C:\\tmp\\foto.jpg' },
+    caption: 'Foto'
+  })
 })
 
 test('antrean menjalankan pesan dalam chat yang sama secara berurutan', async () => {
