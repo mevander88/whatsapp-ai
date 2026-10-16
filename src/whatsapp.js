@@ -3,12 +3,85 @@ const path = require('node:path')
 const pino = require('pino')
 const {
   DisconnectReason,
+  fetchLatestBaileysVersion,
   makeWASocket,
   normalizeMessageContent,
   useMultiFileAuthState
 } = require('@itsukichan/baileys')
+const { fetchLatestWaWebVersion } = require('./whatsapp-version')
 
 const ERROR_REPLY = 'Maaf, layanan sedang mengalami gangguan. Silakan coba lagi sebentar.'
+const VERSION_FETCH_TIMEOUT_MS = 10_000
+const SENSITIVE_LOG_PATHS = [
+  'auth',
+  'creds',
+  'helloMsg',
+  'node',
+  '*.auth',
+  '*.creds',
+  '*.helloMsg',
+  '*.node'
+]
+
+function createSafeLogger(level) {
+  return pino({
+    level,
+    redact: {
+      paths: SENSITIVE_LOG_PATHS,
+      censor: '[Disaring]'
+    }
+  })
+}
+
+function isWhatsAppVersion(value) {
+  return Array.isArray(value) && value.length === 3 && value.every(Number.isInteger)
+}
+
+async function resolveWhatsAppVersion({ fetchWaWebVersion, fetchBaileysVersion, versionOverride }, logger) {
+  if (isWhatsAppVersion(versionOverride)) {
+    logger.info({ version: versionOverride.join('.'), source: 'config' }, 'Versi protokol WhatsApp dipilih')
+    return versionOverride
+  }
+
+  try {
+    const version = await fetchWaWebVersion({ timeoutMs: VERSION_FETCH_TIMEOUT_MS })
+    if (isWhatsAppVersion(version)) {
+      logger.info({ version: version.join('.'), source: 'whatsapp-web' }, 'Versi protokol WhatsApp dipilih')
+      return version
+    }
+    throw new Error('Respons versi WhatsApp Web tidak valid')
+  } catch (error) {
+    logger.warn({ err: error }, 'Versi langsung dari WhatsApp Web tidak dapat dimuat; mencoba versi Baileys')
+  }
+
+  try {
+    const result = await fetchBaileysVersion({ timeout: VERSION_FETCH_TIMEOUT_MS })
+    if (result?.isLatest && isWhatsAppVersion(result.version)) {
+      logger.info({ version: result.version.join('.'), source: 'baileys' }, 'Versi protokol WhatsApp dipilih')
+      return result.version
+    }
+
+    const error = result?.error || new Error('Respons versi WhatsApp tidak valid')
+    logger.warn({ err: error }, 'Versi protokol terbaru tidak dapat dimuat; menggunakan versi bawaan Baileys')
+  } catch (error) {
+    logger.warn({ err: error }, 'Versi protokol terbaru tidak dapat dimuat; menggunakan versi bawaan Baileys')
+  }
+
+  return undefined
+}
+
+function connectionFailureMessage(statusCode) {
+  if (statusCode === 405) {
+    return 'Registrasi WhatsApp ditolak (405). Periksa versi Baileys/protokol dan pastikan jaringan tidak memblokir WhatsApp Web.'
+  }
+  if (statusCode === 500) {
+    return 'Handshake WhatsApp gagal (500). Periksa koneksi, proxy, firewall, dan validitas folder sesi.'
+  }
+  if (statusCode === DisconnectReason.timedOut) {
+    return 'Koneksi WhatsApp kehabisan waktu. Periksa koneksi internet, proxy, atau firewall.'
+  }
+  return 'Koneksi WhatsApp terputus sebelum siap.'
+}
 
 function extractText(message) {
   const content = normalizeMessageContent(message?.message)
@@ -127,13 +200,30 @@ function createChatQueue() {
   }
 }
 
-function createWhatsAppBot({ database, agent, historyLimit, sessionPath, logLevel = 'info' }) {
-  const logger = pino({ level: logLevel })
+function createWhatsAppBot({
+  database,
+  agent,
+  historyLimit,
+  sessionPath,
+  logLevel = 'info',
+  connectTimeoutMs = 30_000,
+  maxReconnectAttempts = 5,
+  whatsappVersion: versionOverride
+}, runtime = {}) {
+  const logger = runtime.logger || createSafeLogger(logLevel)
+  const createSocket = runtime.makeWASocket || makeWASocket
+  const loadAuthState = runtime.useMultiFileAuthState || useMultiFileAuthState
+  const fetchWaWebVersion = runtime.fetchLatestWaWebVersion || fetchLatestWaWebVersion
+  const fetchBaileysVersion = runtime.fetchLatestBaileysVersion || fetchLatestBaileysVersion
+  const scheduleTimer = runtime.setTimeout || setTimeout
+  const cancelTimer = runtime.clearTimeout || clearTimeout
   const enqueue = createChatQueue()
   let socket
   let reconnectTimer
   let reconnectAttempts = 0
   let stopped = false
+  let whatsappVersion
+  let versionResolved = false
 
   async function handleMessage(message) {
     const chatId = message?.key?.remoteJid
@@ -187,10 +277,17 @@ function createWhatsAppBot({ database, agent, historyLimit, sessionPath, logLeve
 
   function scheduleReconnect() {
     if (stopped || reconnectTimer) return
+    if (reconnectAttempts >= maxReconnectAttempts) {
+      logger.error(
+        { attempts: reconnectAttempts },
+        'Batas koneksi ulang WhatsApp tercapai. Periksa jaringan dan konfigurasi, lalu jalankan ulang bot.'
+      )
+      return
+    }
     const delayMs = Math.min(1_000 * 2 ** reconnectAttempts, 30_000)
     reconnectAttempts += 1
-    logger.info({ delayMs }, 'Menjadwalkan koneksi ulang WhatsApp')
-    reconnectTimer = setTimeout(() => {
+    logger.info({ attempt: reconnectAttempts, maxAttempts: maxReconnectAttempts, delayMs }, 'Menjadwalkan koneksi ulang WhatsApp')
+    reconnectTimer = scheduleTimer(() => {
       reconnectTimer = undefined
       void connect().catch((error) => {
         logger.error({ err: error }, 'Koneksi ulang WhatsApp gagal')
@@ -212,14 +309,27 @@ function createWhatsAppBot({ database, agent, historyLimit, sessionPath, logLeve
   async function connect() {
     if (stopped) return
 
-    const { state, saveCreds } = await useMultiFileAuthState(sessionPath)
-    socket = makeWASocket({
+    if (!versionResolved) {
+      whatsappVersion = await resolveWhatsAppVersion({ fetchWaWebVersion, fetchBaileysVersion, versionOverride }, logger)
+      versionResolved = true
+    }
+
+    const { state, saveCreds } = await loadAuthState(sessionPath)
+    const socketOptions = {
       auth: state,
       logger,
       printQRInTerminal: true,
+      connectTimeoutMs,
       markOnlineOnConnect: false,
       syncFullHistory: false
-    })
+    }
+    if (whatsappVersion) socketOptions.version = whatsappVersion
+
+    logger.info(
+      { hasSession: Boolean(state.creds?.me), version: whatsappVersion?.join('.') || 'bawaan-paket' },
+      'Memulai koneksi WhatsApp'
+    )
+    socket = createSocket(socketOptions)
 
     socket.ev.on('creds.update', saveCreds)
 
@@ -235,7 +345,11 @@ function createWhatsAppBot({ database, agent, historyLimit, sessionPath, logLeve
       }
     })
 
-    socket.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+    socket.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        logger.info('QR login WhatsApp siap. Pindai melalui menu Perangkat tertaut di aplikasi WhatsApp.')
+      }
+
       if (connection === 'open') {
         reconnectAttempts = 0
         logger.info('WhatsApp terhubung')
@@ -253,6 +367,11 @@ function createWhatsAppBot({ database, agent, historyLimit, sessionPath, logLeve
       }
 
       logger.warn({ statusCode }, 'Koneksi WhatsApp terputus')
+      logger.warn(connectionFailureMessage(statusCode))
+      if (statusCode === 405 || statusCode === DisconnectReason.forbidden) {
+        logger.error('Koneksi tidak akan diulang otomatis untuk kegagalan ini. Perbaiki versi atau akses jaringan, lalu jalankan ulang bot.')
+        return
+      }
       scheduleReconnect()
     })
   }
@@ -261,7 +380,7 @@ function createWhatsAppBot({ database, agent, historyLimit, sessionPath, logLeve
     start: connect,
     async stop() {
       stopped = true
-      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (reconnectTimer) cancelTimer(reconnectTimer)
       if (socket?.ws?.isOpen) socket.ws.close()
     }
   }
@@ -270,10 +389,14 @@ function createWhatsAppBot({ database, agent, historyLimit, sessionPath, logLeve
 module.exports = {
   ERROR_REPLY,
   buildMessageContent,
+  connectionFailureMessage,
   createChatQueue,
+  createSafeLogger,
   createWhatsAppBot,
   disconnectStatusCode,
   extractText,
+  isWhatsAppVersion,
+  resolveWhatsAppVersion,
   responseFallbackText,
   senderIds
 }

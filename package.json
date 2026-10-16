@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node index.js",
     "test": "node --test",
-    "check": "node --check index.js && node --check src/agent.js && node --check src/computer-tools.js && node --check src/config.js && node --check src/database.js && node --check src/deepseek.js && node --check src/response-tools.js && node --check src/security.js && node --check src/whatsapp.js"
+    "check": "node --check index.js && node --check src/agent.js && node --check src/computer-tools.js && node --check src/config.js && node --check src/database.js && node --check src/deepseek.js && node --check src/response-tools.js && node --check src/security.js && node --check src/whatsapp-version.js && node --check src/whatsapp.js"
   },
   "engines": {
     "node": ">=20"

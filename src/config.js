@@ -22,6 +22,15 @@ function normalizeOwnerId(value) {
   return normalized.includes('@') ? normalized : `${normalized}@s.whatsapp.net`
 }
 
+function whatsappVersion(value) {
+  if (!value?.trim()) return undefined
+  const version = value.split(',').map((item) => Number(item.trim()))
+  if (version.length !== 3 || version.some((item) => !Number.isSafeInteger(item) || item < 0)) {
+    throw new Error('WHATSAPP_WEB_VERSION harus berisi tiga angka yang dipisahkan koma')
+  }
+  return version
+}
+
 function loadConfig(environment = process.env) {
   dotenv.config({ quiet: true })
 
@@ -44,6 +53,13 @@ function loadConfig(environment = process.env) {
     aiTimeoutMs: positiveInteger(env.AI_TIMEOUT_MS, 30_000, 'AI_TIMEOUT_MS'),
     sessionPath: path.resolve(env.SESSION_PATH?.trim() || './auth_info_baileys'),
     logLevel: env.LOG_LEVEL?.trim() || 'info',
+    whatsappConnectTimeoutMs: positiveInteger(env.WHATSAPP_CONNECT_TIMEOUT_MS, 30_000, 'WHATSAPP_CONNECT_TIMEOUT_MS'),
+    whatsappMaxReconnectAttempts: positiveInteger(
+      env.WHATSAPP_MAX_RECONNECT_ATTEMPTS,
+      5,
+      'WHATSAPP_MAX_RECONNECT_ATTEMPTS'
+    ),
+    whatsappVersion: whatsappVersion(env.WHATSAPP_WEB_VERSION),
     ownerIds: commaSeparated(env.OWNER_NUMBERS).map(normalizeOwnerId),
     allowedPaths: commaSeparated(env.AGENT_ALLOWED_PATHS, ['./agent-workspace']).map((item) => path.resolve(item)),
     allowedApps: commaSeparated(env.AGENT_ALLOWED_APPS).map((item) => item.toLowerCase()),
@@ -53,4 +69,4 @@ function loadConfig(environment = process.env) {
   }
 }
 
-module.exports = { commaSeparated, loadConfig, normalizeOwnerId, positiveInteger }
+module.exports = { commaSeparated, loadConfig, normalizeOwnerId, positiveInteger, whatsappVersion }
