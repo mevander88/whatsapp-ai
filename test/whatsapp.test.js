@@ -7,8 +7,10 @@ const {
   createChatQueue,
   createWhatsAppBot,
   extractText,
+  resolveSenderIds,
   resolveWhatsAppVersion
 } = require('../src/whatsapp')
+const { findOwnerId } = require('../src/security')
 
 function createTestLogger(entries) {
   return {
@@ -17,6 +19,11 @@ function createTestLogger(entries) {
     info: (...args) => entries.push(['info', ...args]),
     warn: (...args) => entries.push(['warn', ...args])
   }
+}
+
+const testDatabase = {
+  recoverInterruptedMessages: async () => 0,
+  getPendingReplies: async () => []
 }
 
 test('extractText membaca pesan teks biasa dan extended text', () => {
@@ -32,7 +39,26 @@ test('extractText membaca pesan teks biasa dan extended text', () => {
   )
 })
 
-test('buildMessageContent menyusun tombol dan media sesuai format Baileys', () => {
+test('LID pemilik dikenali lewat pemetaan Baileys, LID lain tetap tanpa izin', async () => {
+  const currentSocket = {
+    signalRepository: {
+      getLIDMappingStore: () => ({
+        getPNForLID: async (lid) => lid === '111@lid' ? '628123:4@s.whatsapp.net' : null
+      })
+    }
+  }
+  const ownerIds = await resolveSenderIds({ key: { remoteJid: '111@lid' } }, currentSocket)
+  const otherIds = await resolveSenderIds({ key: { remoteJid: '222@lid' } }, currentSocket)
+
+  assert.equal(findOwnerId(ownerIds, ['628123@s.whatsapp.net']), '628123@s.whatsapp.net')
+  assert.equal(findOwnerId(otherIds, ['628123@s.whatsapp.net']), null)
+  const misleadingAlt = await resolveSenderIds({
+    key: { remoteJid: '222@lid', remoteJidAlt: '628123@s.whatsapp.net' }
+  }, currentSocket)
+  assert.equal(findOwnerId(misleadingAlt, ['628123@s.whatsapp.net']), null)
+})
+
+test('buildMessageContent menyusun tombol, daftar, dan media sesuai format Baileys', () => {
   assert.deepEqual(buildMessageContent({
     type: 'buttons',
     text: 'Pilih',
@@ -42,6 +68,20 @@ test('buildMessageContent menyusun tombol dan media sesuai format Baileys', () =
     text: 'Pilih',
     footer: 'Agent',
     buttons: [{ buttonId: 'yes', buttonText: { displayText: 'Ya' } }]
+  })
+
+  assert.deepEqual(buildMessageContent({
+    type: 'list',
+    text: 'Menu',
+    options: [{ id: 'satu', title: 'Pilihan satu' }]
+  }), {
+    title: undefined,
+    text: 'Menu',
+    buttonText: undefined,
+    sections: [{
+      title: undefined,
+      rows: [{ rowId: 'satu', title: 'Pilihan satu', description: undefined }]
+    }]
   })
 
   assert.deepEqual(buildMessageContent({ type: 'image', filePath: 'C:\\tmp\\foto.jpg', caption: 'Foto' }), {
@@ -95,7 +135,7 @@ test('bot memakai versi terbaru, menampilkan status QR, dan menyimpan kredensial
   let saveCredsCalled = false
 
   const bot = createWhatsAppBot({
-    database: {},
+    database: testDatabase,
     agent: {},
     historyLimit: 10,
     sessionPath: 'auth-test'
@@ -134,7 +174,7 @@ test('bot tidak mengulang registrasi yang ditolak dengan status 405', async () =
   const ev = new EventEmitter()
   const timers = []
   const bot = createWhatsAppBot({
-    database: {}, agent: {}, historyLimit: 10, sessionPath: 'auth-test'
+    database: testDatabase, agent: {}, historyLimit: 10, sessionPath: 'auth-test'
   }, {
     logger: createTestLogger(entries),
     fetchLatestWaWebVersion: async () => [2, 3000, 123],
@@ -158,7 +198,7 @@ test('bot membatasi koneksi ulang dan hanya mengambil versi protokol sekali', as
   let versionFetches = 0
 
   const bot = createWhatsAppBot({
-    database: {},
+    database: testDatabase,
     agent: {},
     historyLimit: 10,
     sessionPath: 'auth-test',

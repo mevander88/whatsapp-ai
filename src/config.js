@@ -35,17 +35,19 @@ function loadConfig(environment = process.env) {
   dotenv.config({ quiet: true })
 
   const env = environment === process.env ? process.env : environment
-  const missing = ['DEEPSEEK_API_KEY', 'DATABASE_URL'].filter((name) => !env[name]?.trim())
+  const missing = []
+  if (!env.HF_TOKEN?.trim() && !env.DEEPSEEK_API_KEY?.trim()) missing.push('HF_TOKEN (atau DEEPSEEK_API_KEY)')
+  if (!env.DATABASE_URL?.trim()) missing.push('DATABASE_URL')
 
   if (missing.length > 0) {
     throw new Error(`Konfigurasi wajib belum tersedia: ${missing.join(', ')}`)
   }
 
   return {
-    deepseekApiKey: env.DEEPSEEK_API_KEY.trim(),
+    deepseekApiKey: env.HF_TOKEN?.trim() || env.DEEPSEEK_API_KEY.trim(),
     databaseUrl: env.DATABASE_URL.trim(),
-    deepseekApiUrl: env.DEEPSEEK_API_URL?.trim() || 'https://api.deepseek.com/chat/completions',
-    deepseekModel: env.DEEPSEEK_MODEL?.trim() || 'deepseek-flash',
+    deepseekApiUrl: env.DEEPSEEK_API_URL?.trim() || 'https://api.howtofix.id/v1/chat/completions',
+    deepseekModel: env.DEEPSEEK_MODEL?.trim() || 'deepseek-v4.1-flash',
     systemPrompt:
       env.SYSTEM_PROMPT?.trim() ||
       'Anda adalah asisten WhatsApp yang ramah dan membantu. Jawab dengan ringkas dalam Bahasa Indonesia.',
@@ -63,6 +65,12 @@ function loadConfig(environment = process.env) {
     ownerIds: commaSeparated(env.OWNER_NUMBERS).map(normalizeOwnerId),
     allowedPaths: commaSeparated(env.AGENT_ALLOWED_PATHS, ['./agent-workspace']).map((item) => path.resolve(item)),
     allowedApps: commaSeparated(env.AGENT_ALLOWED_APPS).map((item) => item.toLowerCase()),
+    allowedCmdCommands: commaSeparated(
+      env.AGENT_ALLOWED_CMD_COMMANDS,
+      ['ver', 'whoami', 'hostname', 'ipconfig', 'tasklist', 'systeminfo']
+    ).map((item) => item.toLowerCase()),
+    cameraDeviceName: env.CAMERA_DEVICE_NAME?.trim() || '',
+    cameraFfmpegPath: env.CAMERA_FFMPEG_PATH?.trim() || 'ffmpeg',
     approvalTtlMinutes: positiveInteger(env.AGENT_APPROVAL_TTL_MINUTES, 10, 'AGENT_APPROVAL_TTL_MINUTES'),
     maxFileBytes: positiveInteger(env.AGENT_MAX_FILE_BYTES, 32_768, 'AGENT_MAX_FILE_BYTES'),
     maxMediaBytes: positiveInteger(env.AGENT_MAX_MEDIA_BYTES, 10_485_760, 'AGENT_MAX_MEDIA_BYTES')

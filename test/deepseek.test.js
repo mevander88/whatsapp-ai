@@ -43,6 +43,23 @@ test('menolak respons DeepSeek yang gagal', async () => {
   await assert.rejects(() => client.reply([]), /status 429/)
 })
 
+test('token AI yang ditolak menghasilkan diagnosis tanpa membocorkan token', async () => {
+  const client = createDeepSeekClient({
+    apiKey: 'token-rahasia',
+    apiUrl: 'https://example.test/chat',
+    model: 'deepseek-flash',
+    systemPrompt: 'Prompt',
+    timeoutMs: 1_000,
+    fetchImpl: async () => ({ ok: false, status: 401 })
+  })
+
+  await assert.rejects(() => client.reply([]), (error) => {
+    assert.match(error.message, /Token AI ditolak \(401\)/)
+    assert.equal(error.message.includes('token-rahasia'), false)
+    return true
+  })
+})
+
 test('chat membaca tool call terstruktur dari DeepSeek', async () => {
   const client = createDeepSeekClient({
     apiKey: 'token',

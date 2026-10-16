@@ -27,7 +27,10 @@ function createDeepSeekClient({ apiKey, apiUrl, model, systemPrompt, timeoutMs, 
     })
 
     if (!response.ok) {
-      throw new Error(`DeepSeek mengembalikan status ${response.status}`)
+      if (response.status === 401) {
+        throw new Error('Token AI ditolak (401). Periksa HF_TOKEN atau DEEPSEEK_API_KEY serta DEEPSEEK_API_URL di .env.')
+      }
+      throw new Error(`Layanan AI mengembalikan status ${response.status} untuk model ${model}. Periksa ID model dan aksesnya di penyedia API.`)
     }
 
     const data = await response.json()

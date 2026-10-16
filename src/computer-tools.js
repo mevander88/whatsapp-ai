@@ -71,6 +71,29 @@ const TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
+      name: 'run_cmd_command',
+      description: 'Menjalankan satu perintah diagnostik CMD di Windows setelah persetujuan pemilik. Pilih hanya perintah yang tersedia; tidak menerima argumen atau rangkaian perintah.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', enum: ['ver', 'whoami', 'hostname', 'ipconfig', 'tasklist', 'systeminfo'] }
+        },
+        required: ['command'],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'capture_camera_photo',
+      description: 'Mengambil satu foto dari kamera komputer dan langsung mengirimnya ke chat pemilik setelah persetujuan.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'send_local_file',
       description: 'Mengirim gambar, video, audio, atau dokumen dari folder yang diizinkan ke pemilik.',
       parameters: {
@@ -93,8 +116,41 @@ const APP_COMMANDS = {
   linux: { calculator: 'gnome-calculator', texteditor: 'gedit' }
 }
 
-function createComputerTools({ pathPolicy, allowedApps, maxFileBytes, maxMediaBytes = 10_485_760, platform = process.platform }) {
+const CMD_COMMANDS = new Set(['ver', 'whoami', 'hostname', 'ipconfig', 'tasklist', 'systeminfo'])
+const CMD_TIMEOUT_MS = 20_000
+const CMD_MAX_OUTPUT_BYTES = 12_000
+
+function createComputerTools({
+  pathPolicy,
+  allowedApps,
+  allowedCmdCommands = [],
+  camera,
+  maxFileBytes,
+  maxMediaBytes = 10_485_760,
+  platform = process.platform,
+  spawnImpl = spawn
+}) {
   const appAllowlist = new Set(allowedApps.map((item) => item.toLowerCase()))
+  const cmdAllowlist = new Set(allowedCmdCommands.map((item) => item.toLowerCase()))
+  const availableCmdCommands = [...CMD_COMMANDS].filter((command) => cmdAllowlist.has(command))
+  const definitions = TOOL_DEFINITIONS
+    .filter((tool) => {
+      if (tool.function.name === 'run_cmd_command') return platform === 'win32' && availableCmdCommands.length > 0
+      if (tool.function.name === 'capture_camera_photo') return platform === 'win32' && typeof camera?.capture === 'function'
+      return true
+    })
+    .map((tool) => tool.function.name === 'run_cmd_command'
+      ? {
+          ...tool,
+          function: {
+            ...tool.function,
+            parameters: {
+              ...tool.function.parameters,
+              properties: { command: { type: 'string', enum: availableCmdCommands } }
+            }
+          }
+        }
+      : tool)
 
   function requiredString(value, name, maxLength = 1_024) {
     const text = typeof value === 'string' ? value.trim() : ''
@@ -104,6 +160,13 @@ function createComputerTools({ pathPolicy, allowedApps, maxFileBytes, maxMediaBy
 
   function validate(name, args = {}) {
     if (name === 'get_system_info') return {}
+
+    if (name === 'capture_camera_photo') {
+      if (platform !== 'win32' || typeof camera?.capture !== 'function') {
+        throw new Error('Kamera tidak tersedia')
+      }
+      return {}
+    }
 
     if (['list_directory', 'read_text_file'].includes(name)) {
       const requestedPath = requiredString(args.path, 'Path')
@@ -125,6 +188,14 @@ function createComputerTools({ pathPolicy, allowedApps, maxFileBytes, maxMediaBy
         throw new Error('Aplikasi tidak ada dalam daftar izin')
       }
       return { name: appName }
+    }
+
+    if (name === 'run_cmd_command') {
+      const command = requiredString(args.command, 'Perintah CMD', 50).toLowerCase()
+      if (platform !== 'win32' || !CMD_COMMANDS.has(command) || !cmdAllowlist.has(command)) {
+        throw new Error('Perintah CMD tidak ada dalam daftar izin')
+      }
+      return { command }
     }
 
     if (name === 'send_local_file') {
@@ -155,6 +226,57 @@ function createComputerTools({ pathPolicy, allowedApps, maxFileBytes, maxMediaBy
     return pathPolicy.resolveAllowedPath(path.join(realParent, path.basename(lexicalPath)))
   }
 
+  async function runCmdCommand(command) {
+    const windowsRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows'
+    const system32 = path.win32.join(windowsRoot, 'System32')
+    const cmdPath = path.win32.join(system32, 'cmd.exe')
+    const output = []
+    let outputBytes = 0
+    let truncated = false
+
+    return new Promise((resolve, reject) => {
+      const child = spawnImpl(cmdPath, ['/d', '/q', '/c', command], {
+        cwd: system32,
+        env: {
+          SystemRoot: windowsRoot,
+          windir: windowsRoot,
+          ComSpec: cmdPath,
+          PATH: system32,
+          PATHEXT: '.COM;.EXE'
+        },
+        shell: false,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: CMD_TIMEOUT_MS,
+        killSignal: 'SIGKILL'
+      })
+
+      const collect = (chunk) => {
+        const available = Math.max(0, CMD_MAX_OUTPUT_BYTES - outputBytes)
+        if (available > 0) {
+          output.push(chunk.subarray(0, available))
+          outputBytes += Math.min(chunk.length, available)
+        }
+        if (chunk.length > available) truncated = true
+      }
+      child.stdout.on('data', collect)
+      child.stderr.on('data', collect)
+      child.once('error', reject)
+      child.once('close', (code, signal) => {
+        if (signal) {
+          reject(new Error('Perintah CMD melewati batas waktu atau dihentikan'))
+          return
+        }
+        resolve({
+          command,
+          exitCode: code,
+          output: redactSecrets(Buffer.concat(output).toString('utf8')).trim(),
+          truncated
+        })
+      })
+    })
+  }
+
   function describe(name, args) {
     const descriptions = {
       get_system_info: 'membaca informasi dasar sistem dan mengirimkannya ke DeepSeek untuk dirangkum',
@@ -162,6 +284,8 @@ function createComputerTools({ pathPolicy, allowedApps, maxFileBytes, maxMediaBy
       read_text_file: `membaca file ${args.path} dan mengirim isinya ke DeepSeek`,
       write_text_file: `menulis file ${args.path}`,
       open_application: `membuka aplikasi ${args.name}`,
+      run_cmd_command: `menjalankan perintah CMD: ${args.command}`,
+      capture_camera_photo: 'mengambil satu foto dari kamera komputer dan mengirimnya ke chat ini',
       send_local_file: `mengirim ${args.mediaType || 'file'} ${args.path} ke chat ini`
     }
     return descriptions[name] || name
@@ -225,6 +349,15 @@ function createComputerTools({ pathPolicy, allowedApps, maxFileBytes, maxMediaBy
         child.unref()
         return { type: 'data', data: { opened: appName } }
       }
+      case 'run_cmd_command': { // eslint-disable-line no-case-declarations
+        const result = await runCmdCommand(args.command)
+        if (result.exitCode !== 0) {
+          throw new Error(`CMD gagal (kode ${result.exitCode}): ${result.output.slice(0, 200) || 'tidak ada keluaran'}`)
+        }
+        return { type: 'data', data: result }
+      }
+      case 'capture_camera_photo':
+        return { type: 'response', response: await camera.capture() }
       case 'send_local_file': { // eslint-disable-line no-case-declarations
         const target = await existingAllowedPath(args.path)
         const stat = await fs.stat(target)
@@ -246,11 +379,12 @@ function createComputerTools({ pathPolicy, allowedApps, maxFileBytes, maxMediaBy
   }
 
   return {
-    definitions: TOOL_DEFINITIONS,
-    has: (name) => TOOL_DEFINITIONS.some((tool) => tool.function.name === name),
+    definitions,
+    has: (name) => definitions.some((tool) => tool.function.name === name),
     describe,
     execute,
-    validate
+    validate,
+    cleanupGeneratedFile: camera?.cleanup
   }
 }
 

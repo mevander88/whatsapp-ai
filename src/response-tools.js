@@ -3,7 +3,7 @@ const RESPONSE_TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'send_buttons',
-      description: 'Mengirim hingga tiga tombol pilihan ketika pengguna perlu memilih langkah berikutnya.',
+      description: 'Mengirim hingga tiga tombol pilihan ketika pengguna perlu memilih langkah berikutnya. Setiap label tombol wajib berisi 1 sampai 20 karakter.',
       parameters: {
         type: 'object',
         properties: {
@@ -15,7 +15,7 @@ const RESPONSE_TOOL_DEFINITIONS = [
             maxItems: 3,
             items: {
               type: 'object',
-              properties: { id: { type: 'string' }, label: { type: 'string' } },
+              properties: { id: { type: 'string', minLength: 1, maxLength: 100 }, label: { type: 'string', minLength: 1, maxLength: 20 } },
               required: ['id', 'label'],
               additionalProperties: false
             }

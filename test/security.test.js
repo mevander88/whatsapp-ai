@@ -9,6 +9,7 @@ test('mengenali pemilik dari JID utama atau alternatif', () => {
     '628123@s.whatsapp.net'
   )
   assert.equal(findOwnerId(['999@s.whatsapp.net'], ['628123@s.whatsapp.net']), null)
+  assert.equal(findOwnerId(['628123:4@s.whatsapp.net'], ['628123@s.whatsapp.net']), '628123@s.whatsapp.net')
 })
 
 test('path policy membatasi akses ke root dan memblokir rahasia', () => {
