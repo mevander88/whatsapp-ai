@@ -40,6 +40,26 @@ Konfigurasi wajib:
 
 Konfigurasi opsional tersedia di `.env.example`, termasuk model DeepSeek, system prompt, jumlah riwayat, timeout, lokasi sesi, dan level log.
 
+Model bawaan adalah **DeepSeek-V4.1-Flash**. ID model yang dikirim ke API adalah `deepseek-flash`, sesuai [dokumentasi resmi DeepSeek](https://api-docs.deepseek.com/news/news260910/).
+
+## AI Agent dan akses komputer
+
+Isi `OWNER_NUMBERS` dengan nomor WhatsApp pemilik. Hanya nomor tersebut yang dapat melihat dan menjalankan tool komputer. Nomor lain tetap dapat memakai bot untuk pertanyaan umum.
+
+`AGENT_ALLOWED_PATHS` menentukan folder yang boleh dibaca atau ditulis agent. Nilai bawaan adalah `./agent-workspace`; buat folder tersebut sebelum meminta agent menampilkan atau membaca isinya. `AGENT_ALLOWED_APPS` menentukan aplikasi yang boleh dibuka. Semua akses komputer tetap memerlukan persetujuan pemilik melalui tombol WhatsApp atau balasan `SETUJUI <kode>`.
+
+Agent tidak menerima terminal umum. Kemampuannya dibatasi pada:
+
+- melihat informasi sistem dasar;
+- menampilkan folder dan membaca file teks berukuran terbatas;
+- menulis file teks dalam folder yang diizinkan;
+- membuka aplikasi dari daftar izin;
+- mengirim file lokal yang diizinkan sebagai gambar, video, audio, atau dokumen.
+
+File rahasia seperti `.env`, kredensial sesi WhatsApp, private key, `.git`, dan isi `node_modules` selalu diblokir. Hasil baca yang disetujui dapat dikirim ke DeepSeek untuk dirangkum.
+
+Bot juga dapat memilih balasan berbentuk tombol, daftar, dan polling. Jika format interaktif gagal dikirim, bot memakai fallback teks.
+
 ## Perilaku versi awal
 
 - Hanya chat pribadi berbentuk teks yang diproses.
