@@ -1,0 +1,23 @@
+{
+  "name": "wa-ai",
+  "version": "1.0.0",
+  "description": "WhatsApp Bot AI",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test",
+    "check": "node --check index.js && node --check src/config.js && node --check src/database.js && node --check src/deepseek.js && node --check src/whatsapp.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@itsukichan/baileys": "^7.3.2",
+    "dotenv": "^18.0.8",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0"
+  }
+}
