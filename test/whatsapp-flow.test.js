@@ -3,9 +3,9 @@ const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const { createWhatsAppBot, ERROR_REPLY, isRecentAppend } = require('../src/whatsapp')
 
-function createFixture({ sendFailsOnce = false, agentFails = false, historyFails = false, prepareFails = false, agentResponse, cleanupGeneratedFile } = {}) {
+function createFixture({ sendFailsOnce = false, agentFails = false, historyFails = false, prepareFails = false, presenceFails = false, agentResponse, agentHandle, cleanupGeneratedFile, downloadMediaMessage } = {}) {
   const rows = new Map()
-  const calls = { agent: 0, send: [], assistant: [], logs: [], timers: [] }
+  const calls = { agent: 0, send: [], presence: [], events: [], assistant: [], logs: [], timers: [], intervals: [] }
   const ev = new EventEmitter()
   const logger = Object.fromEntries(['debug', 'info', 'warn', 'error'].map((level) => [
     level,
@@ -63,9 +63,11 @@ function createFixture({ sendFailsOnce = false, agentFails = false, historyFails
     }
   }
   const agent = {
-    async handle() {
+    async handle(input) {
       calls.agent += 1
+      calls.events.push('agent')
       if (agentFails) throw new Error('AI gagal')
+      if (agentHandle) return agentHandle(input)
       return agentResponse || { type: 'text', text: 'Hai!' }
     },
     historyText(response) { return response.text }
@@ -76,17 +78,30 @@ function createFixture({ sendFailsOnce = false, agentFails = false, historyFails
     logger,
     fetchLatestWaWebVersion: async () => [2, 3000, 123],
     useMultiFileAuthState: async () => ({ state: { creds: {}, keys: {} }, saveCreds: async () => {} }),
+    downloadMediaMessage,
     makeWASocket: () => ({
       ev,
       ws: { isOpen: false },
+      async sendPresenceUpdate(type, jid) {
+        calls.presence.push({ type, jid })
+        calls.events.push(type)
+        if (presenceFails) throw new Error('Presence gagal')
+      },
       async sendMessage(jid, content, options) {
         calls.send.push({ jid, content, options })
+        calls.events.push('send')
         if (sendFailsOnce && calls.send.length === 1) throw new Error('Jaringan putus')
         return { key: { id: options.messageId } }
       }
     }),
     setTimeout: (callback) => { calls.timers.push(callback); return callback },
-    clearTimeout: () => {}
+    clearTimeout: () => {},
+    setInterval: (callback, delay) => {
+      const interval = { callback, delay, active: true }
+      calls.intervals.push(interval)
+      return interval
+    },
+    clearInterval: (interval) => { interval.active = false }
   })
   const message = (id = 'pesan-1', overrides = {}) => ({
     key: { id, remoteJid: '123@s.whatsapp.net', fromMe: false },
@@ -115,6 +130,66 @@ test('pesan notify dibalas sekali dan baru dicatat setelah pengiriman', async ()
   assert.equal(calls.send[0].content.text, 'Hai!')
   assert.equal(calls.assistant.length, 1)
   assert.equal(rows.get('123@s.whatsapp.net:pesan-1').status, 'sent')
+  await bot.stop()
+})
+
+test('gambar pribadi tanpa caption diunduh dan diteruskan ke agent sekali', async () => {
+  let inbound
+  let downloads = 0
+  const picture = Buffer.from([0xff, 0xd8, 0xff, 0x00])
+  const { bot, ev, calls, message } = createFixture({
+    downloadMediaMessage: async () => { downloads += 1; return picture },
+    agentHandle: async (input) => { inbound = input; return { type: 'text', text: 'Gambar diterima' } }
+  })
+  await bot.start()
+  ev.emit('connection.update', { connection: 'open' })
+  ev.emit('messages.upsert', { type: 'notify', messages: [message('gambar-1', { message: { imageMessage: { fileLength: picture.length } } })] })
+  await settle()
+  assert.equal(downloads, 1)
+  assert.equal(inbound.text, 'Jelaskan isi gambar ini.')
+  assert.deepEqual(inbound.imageBuffer, picture)
+  assert.equal(calls.send[0].content.text, 'Gambar diterima')
+  await bot.stop()
+})
+
+test('indikator mengetik aktif selama agent bekerja, diperbarui, lalu berhenti setelah balasan', async () => {
+  let finishAgent
+  const agentWait = new Promise((resolve) => { finishAgent = resolve })
+  const { bot, ev, calls, message } = createFixture({
+    agentHandle: async () => {
+      await agentWait
+      return { type: 'text', text: 'Hai!' }
+    }
+  })
+  await bot.start()
+  ev.emit('connection.update', { connection: 'open' })
+  ev.emit('messages.upsert', { type: 'notify', messages: [message()] })
+  await settle()
+
+  assert.deepEqual(calls.presence, [{ type: 'composing', jid: '123@s.whatsapp.net' }])
+  assert.equal(calls.send.length, 0)
+  assert.equal(calls.intervals[0].delay, 8_000)
+  calls.intervals[0].callback()
+  await settle()
+  assert.equal(calls.presence.filter(({ type }) => type === 'composing').length, 2)
+
+  finishAgent()
+  await settle()
+  assert.deepEqual(calls.events, ['composing', 'agent', 'composing', 'send', 'paused'])
+  assert.equal(calls.intervals[0].active, false)
+  await bot.stop()
+})
+
+test('kegagalan indikator mengetik tidak menghalangi balasan dan tetap mencoba berhenti', async () => {
+  const { bot, ev, calls, message } = createFixture({ presenceFails: true })
+  await bot.start()
+  ev.emit('connection.update', { connection: 'open' })
+  ev.emit('messages.upsert', { type: 'notify', messages: [message()] })
+  await settle()
+
+  assert.equal(calls.send.length, 1)
+  assert.deepEqual(calls.presence.map(({ type }) => type), ['composing', 'paused'])
+  assert.equal(calls.intervals[0].active, false)
   await bot.stop()
 })
 
@@ -202,6 +277,7 @@ test('gagal membaca database menghasilkan pemberitahuan dan tidak menjalankan ag
   assert.equal(calls.agent, 0)
   assert.equal(calls.send.length, 1)
   assert.equal(calls.send[0].content.text, ERROR_REPLY)
+  assert.deepEqual(calls.presence.map(({ type }) => type), ['composing', 'paused'])
   assert.ok(calls.logs.some((entry) => entry.includes('Gagal memproses pesan')))
   await bot.stop()
 })
@@ -292,5 +368,22 @@ test('foto sementara dibersihkan jika penyimpanan balasan gagal', async () => {
 
   assert.deepEqual(cleaned, ['foto-gagal.jpg'])
   assert.equal(calls.send[0].content.text, ERROR_REPLY)
+  await bot.stop()
+})
+
+test('tangkapan layar godmode dikirim sebagai gambar lalu file sementaranya dibersihkan', async () => {
+  const cleaned = []
+  const screenshot = { type: 'image', filePath: 'desktop.jpg', caption: 'Tangkapan layar', desktopCapture: true }
+  const { bot, ev, calls, message } = createFixture({
+    agentResponse: screenshot,
+    cleanupGeneratedFile: async (filePath) => { cleaned.push(filePath) }
+  })
+  await bot.start()
+  ev.emit('connection.update', { connection: 'open' })
+  ev.emit('messages.upsert', { type: 'notify', messages: [message()] })
+  await settle()
+
+  assert.deepEqual(calls.send[0].content.image, { url: 'desktop.jpg' })
+  assert.deepEqual(cleaned, ['desktop.jpg'])
   await bot.stop()
 })

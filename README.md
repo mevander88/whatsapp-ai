@@ -1,6 +1,6 @@
 # WhatsApp AI Bot
 
-Bot WhatsApp sederhana yang membalas chat pribadi menggunakan model DeepSeek melalui API HowToFix. Riwayat percakapan disimpan di PostgreSQL dan sesi login WhatsApp disimpan secara lokal agar QR tidak perlu dipindai ulang setiap kali proses dimulai.
+Bot WhatsApp sederhana yang membalas chat pribadi menggunakan model AI melalui API HowToFix. Riwayat percakapan disimpan di PostgreSQL dan sesi login WhatsApp disimpan secara lokal agar QR tidak perlu dipindai ulang setiap kali proses dimulai.
 
 Koneksi WhatsApp menggunakan `@itsukichan/baileys`.
 
@@ -43,19 +43,25 @@ Konfigurasi wajib:
 - `HF_TOKEN`: token API HowToFix. `DEEPSEEK_API_KEY` juga diterima untuk konfigurasi lama; jika keduanya ada, `HF_TOKEN` dipakai.
 - `DATABASE_URL`: connection string PostgreSQL.
 
-Konfigurasi opsional tersedia di `.env.example`, termasuk URL API, model DeepSeek, system prompt, jumlah riwayat, timeout, lokasi sesi, dan level log.
+Bot memakai paket `openai` resmi untuk Node.js dengan Chat Completions. SDK diarahkan ke base URL HowToFix `https://api.howtofix.id/v1` dan menggunakan `HF_TOKEN` untuk autentikasi. Ini mengikuti [contoh OpenAI SDK pada dokumentasi HowToFix](https://howtofix.id/docs). Token HowToFix tetap memerlukan gateway tersebut; SDK tidak mengubahnya menjadi token API OpenAI langsung.
+
+Konfigurasi opsional tersedia di `.env.example`, termasuk base URL API, model AI, system prompt, jumlah riwayat, timeout, lokasi sesi, dan level log. Gunakan `AI_MODEL` dan `AI_BASE_URL`; nama lama `DEEPSEEK_MODEL`, `AI_API_URL`, dan `DEEPSEEK_API_URL` tetap diterima.
+
+Jika log menampilkan `403 verification_required`, gateway HowToFix melaporkan masalah verifikasi. Periksa **Account Bindings** di [Security HowToFix](https://howtofix.id/security). Bila semua binding sudah selesai, pastikan API key dibuat pada akun yang sama; jika tetap ditolak, kirim request ID dari Usage Logs ke dukungan HowToFix. Untuk 403 tanpa kode tersebut, periksa daftar model yang diizinkan untuk token di konsol. Endpoint `GET https://api.howtofix.id/v1/models` menampilkan model yang dapat diakses oleh token. Setelah mengganti token atau model di `.env`, jalankan ulang bot agar proses memuat nilai terbaru.
+
+Jika log menampilkan `401`, pastikan `HF_TOKEN` berisi API key `sk-` dari **Console > Tokens**, bukan access token dari proses verifikasi. Setelah mengubah `.env`, hentikan proses bot yang lama lalu jalankan lagi dengan `npm start`.
 
 - `WHATSAPP_CONNECT_TIMEOUT_MS`: batas waktu satu percobaan koneksi WhatsApp.
 - `WHATSAPP_MAX_RECONNECT_ATTEMPTS`: jumlah maksimum percobaan koneksi ulang sebelum pengguna perlu memeriksa masalah dan menjalankan ulang bot.
 - `WHATSAPP_WEB_VERSION`: override sementara dalam format `2,3000,revision`. Biarkan kosong agar bot mengambil versi langsung dari WhatsApp Web.
 
-URL API bawaan adalah `https://api.howtofix.id/v1/chat/completions`. Model bawaan adalah **DeepSeek-V4.1-Flash** dengan ID `deepseek-v4.1-flash` sesuai daftar `https://api.howtofix.id/v1/models`. Isi `DEEPSEEK_API_URL` dan `DEEPSEEK_MODEL` di `.env` bila penyedia API memberikan nilai yang berbeda.
+Base URL SDK bawaan adalah `https://api.howtofix.id/v1`. Model bawaan adalah **DeepSeek V4.1 Flash** dengan ID `deepseek-v4.1-flash`. Isi `AI_MODEL` di `.env` bila daftar model yang dapat diakses token menampilkan ID berbeda.
 
 ## AI Agent dan akses komputer
 
 Isi `OWNER_NUMBERS` dengan nomor WhatsApp pemilik. Hanya nomor tersebut yang dapat melihat dan menjalankan tool komputer. Nomor lain tetap dapat memakai bot untuk pertanyaan umum.
 
-`AGENT_ALLOWED_PATHS` menentukan folder yang boleh dibaca atau ditulis agent. Nilai bawaan adalah `./agent-workspace`; buat folder tersebut sebelum meminta agent menampilkan atau membaca isinya. `AGENT_ALLOWED_APPS` menentukan aplikasi yang boleh dibuka. Semua akses komputer tetap memerlukan persetujuan pemilik melalui tombol WhatsApp atau balasan `SETUJUI <kode>` di chat yang sama. Bot tidak meminta persetujuan tindakan melalui popup di komputer.
+`AGENT_ALLOWED_PATHS` menentukan folder yang boleh dibaca atau ditulis agent dalam mode biasa. Nilai bawaan adalah `./agent-workspace`; buat folder tersebut sebelum meminta agent menampilkan atau membaca isinya. `AGENT_ALLOWED_APPS` menentukan aplikasi yang boleh dibuka. Dalam mode biasa, akses komputer memerlukan persetujuan pemilik melalui tombol WhatsApp atau balasan `SETUJUI <kode>` di chat yang sama. Bot tidak meminta persetujuan tindakan melalui popup di komputer.
 
 Agent dapat menjalankan perintah CMD diagnostik `ver`, `whoami`, `hostname`, `ipconfig`, `tasklist`, dan `systeminfo` di Windows setelah persetujuan pemilik. Perintah yang tersedia dapat dibatasi lewat `AGENT_ALLOWED_CMD_COMMANDS` di `.env`; isi `none` untuk menonaktifkannya. Perintah bebas dan argumen tambahan tidak diterima. Hasil perintah yang disetujui dapat dikirim ke AI untuk dirangkum.
 
@@ -71,7 +77,21 @@ Kemampuan komputer lainnya:
 
 Contoh: kirim `Jalankan systeminfo di CMD dan cek RAM komputer saya`, lalu setujui perintah yang ditampilkan bot. Untuk informasi RAM saja, bot juga dapat memakai tool informasi sistem tanpa CMD.
 
-File rahasia seperti `.env`, kredensial sesi WhatsApp, private key, `.git`, dan isi `node_modules` selalu diblokir. Hasil baca yang disetujui dapat dikirim ke DeepSeek untuk dirangkum.
+Dalam mode biasa, file rahasia seperti `.env`, kredensial sesi WhatsApp, private key, `.git`, dan isi `node_modules` diblokir. Hasil baca yang disetujui dapat dikirim ke model AI untuk dirangkum.
+
+### Godmode untuk pemilik
+
+Kirim `/godmode` dari chat pribadi nomor yang tercantum di `OWNER_NUMBERS` untuk mengaktifkan akses penuh selama 30 menit (atau nilai `AGENT_GODMODE_TTL_MINUTES`). Selama aktif, pemilik dapat meminta tindakan komputer dengan bahasa biasa, misalnya `Buka Chrome`, `Tutup Notepad`, `Lihat aplikasi yang berjalan`, atau `Kirim tangkapan layar komputer`. Agent dapat membuka aplikasi di luar `AGENT_ALLOWED_APPS`, menutup aplikasi, memilih jendela, mengklik koordinat layar, mengetik teks, dan menekan pintasan keyboard. Tangkapan layar dikirim ke chat pemilik dan file sementaranya dibersihkan setelah terkirim. Untuk file, folder, pengaturan sistem, atau tindakan lain, agent dapat memakai PowerShell tanpa daftar izin; `AGENT_ALLOWED_PATHS` tidak membatasi perintah tersebut. Tindakan berjalan tanpa persetujuan tambahan dengan hak akses akun Windows yang menjalankan bot. Gunakan `/exec <perintah PowerShell>` jika ingin menjalankan perintah langsung. Keluaran perintah dibatasi ukurannya dan perintah yang terlalu lama dihentikan.
+
+Kontrol mouse dan keyboard bekerja pada sesi desktop Windows tempat bot dijalankan. Agent membaca hasil setiap tool lalu melanjutkan sampai tugas selesai atau mencapai batas 12 tindakan per pesan. Jika batas tercapai, kirim pesan lanjutan. Agent menghindari pengulangan tindakan yang sama tanpa kemajuan. Agent dapat memakai `inspect_desktop` untuk membaca screenshot sendiri dan memperoleh posisi teks dari OCR sebelum mengklik. Screenshot yang hanya diminta untuk dikirim tetap dikirim sebagai gambar. Agent juga dapat membaca gambar lokal dengan `read_image_file`. Model DeepSeek V4.1 Flash menerima gambar langsung lewat API; OCR dipakai untuk posisi teks dan cadangan jika analisis visual gagal. OCR dapat memerlukan unduhan data bahasa pada pemakaian pertama; file cache disimpan di `agent-workspace/.ocr-cache`. Posisi OCR hanya perkiraan pusat kata, sehingga agent harus memeriksa ulang hasil setelah klik. Jendela yang terkunci, prompt UAC, atau aplikasi dengan hak lebih tinggi mungkin tidak dapat dikendalikan oleh proses bot.
+
+Pesan gambar WhatsApp juga diproses, termasuk gambar tanpa caption. Isi gambar dikirim ke model untuk dianalisis, tetapi data mentah gambar tidak disimpan di riwayat PostgreSQL. Ukurannya dibatasi oleh `AGENT_MAX_MEDIA_BYTES`. Pesan gambar dan screenshot hanya dianggap sebagai data, bukan sumber perintah baru untuk mengendalikan komputer.
+
+Dalam godmode, agent dapat mencari lewat browser Edge, membaca judul dan URL hasil pencarian, membuka hasil, mengklik elemen bernama, dan mengisi kotak teks. Bila Google meminta verifikasi trafik otomatis, pencarian beralih ke Bing. Jika keduanya tidak dapat dibaca, agent melaporkan kegagalan pencarian. Browser agent memakai konteks terpisah dari tab dan login browser pribadi; set `BROWSER_CHANNEL=chrome` untuk memakai Chrome atau `BROWSER_HEADLESS=true` agar jendelanya tidak tampak. Agent dapat mengerjakan file kode dengan PowerShell lalu membukanya di VS Code, atau mengendalikan jendela VS Code lewat tool desktop. Hasilnya tetap perlu diperiksa oleh pemilik untuk tugas yang kompleks.
+
+Server MCP jaringan dapat ditambahkan lewat `MCP_SERVERS_JSON` di `.env` sebagai daftar objek `name`, `url`, dan `headers` opsional. Contoh format ada di `.env.example`. Hanya endpoint HTTPS atau HTTP localhost yang diterima. Ketika godmode aktif, agent dapat melihat status server, memanggil tool yang diumumkan server, serta membaca resource dan prompt. Agar pemilihan tool tetap fokus, model langsung melihat maksimal delapan tool MCP yang relevan; tool lain dapat ditemukan lewat daftar tool server. Tidak ada pencarian otomatis untuk semua server MCP di internet; hanya server yang pemilik daftarkan yang dapat diakses. Kredensial MCP disimpan di `.env`, dan akses MCP tidak diberikan kepada nomor selain pemilik.
+
+Gunakan `/godmode status` untuk memeriksa sisa waktu dan `/godmode off` untuk mematikan. Mode hanya berlaku untuk chat pribadi tempat diaktifkan, tidak tersimpan setelah bot restart, dan setiap tindakan dicatat di audit. Di luar mode ini, batasan folder, daftar perintah CMD, dan persetujuan WhatsApp tetap berlaku.
 
 Bot juga dapat memilih balasan berbentuk tombol, daftar, dan polling. Jika format interaktif gagal dikirim, bot memakai fallback teks.
 
@@ -103,10 +123,10 @@ Status 515 sesaat setelah pairing pertama adalah permintaan restart socket dari 
 
 ## Perilaku versi awal
 
-- Hanya chat pribadi berbentuk teks yang diproses.
-- Pesan grup, status, media, dan pesan dari akun bot sendiri diabaikan.
+- Chat pribadi berbentuk teks atau gambar diproses.
+- Pesan grup, status, media selain gambar, dan pesan dari akun bot sendiri diabaikan.
 - ID pesan disimpan secara unik sehingga event yang diterima ulang tidak menghasilkan balasan ganda.
-- Gangguan pada DeepSeek atau database ditangani per pesan dan tidak menghentikan bot.
+- Gangguan pada layanan AI atau database ditangani per pesan dan tidak menghentikan bot.
 
 ## Pemeriksaan
 
