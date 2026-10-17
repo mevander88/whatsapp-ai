@@ -4,6 +4,7 @@ const crypto = require('node:crypto')
 const pino = require('pino')
 const {
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   makeWASocket,
   normalizeMessageContent,
@@ -279,17 +280,21 @@ function createWhatsAppBot({
   connectTimeoutMs = 30_000,
   maxReconnectAttempts = 5,
   whatsappVersion: versionOverride,
+  maxMediaBytes = 10_485_760,
   cleanupGeneratedFile
 }, runtime = {}) {
   const logger = runtime.logger || createSafeLogger(logLevel)
   const baileysLogger = runtime.baileysLogger ||
     (typeof logger.child === 'function' ? logger.child({ component: 'baileys' }, { level: 'warn' }) : logger)
   const createSocket = runtime.makeWASocket || makeWASocket
+  const downloadMedia = runtime.downloadMediaMessage || downloadMediaMessage
   const loadAuthState = runtime.useMultiFileAuthState || useMultiFileAuthState
   const fetchWaWebVersion = runtime.fetchLatestWaWebVersion || fetchLatestWaWebVersion
   const fetchBaileysVersion = runtime.fetchLatestBaileysVersion || fetchLatestBaileysVersion
   const scheduleTimer = runtime.setTimeout || setTimeout
   const cancelTimer = runtime.clearTimeout || clearTimeout
+  const repeatTimer = runtime.setInterval || setInterval
+  const cancelRepeatTimer = runtime.clearInterval || clearInterval
   const startedAt = Date.now()
   const enqueue = createChatQueue()
   const deliveryTimers = new Map()
@@ -355,12 +360,42 @@ function createWhatsAppBot({
     unavailableTimers.delete(key)
   }
 
-  async function cleanupCameraPhoto(response, tag) {
-    if (response?.cameraCapture !== true || typeof cleanupGeneratedFile !== 'function') return
+  async function cleanupTemporaryCapture(response, tag) {
+    if ((response?.cameraCapture !== true && response?.desktopCapture !== true) || typeof cleanupGeneratedFile !== 'function') return
     try {
       await cleanupGeneratedFile(response.filePath)
     } catch (error) {
-      logger.warn({ err: error, messageTag: tag }, 'File sementara foto kamera belum terhapus')
+      logger.warn({ err: error, messageTag: tag }, 'File sementara tangkapan gambar belum terhapus')
+    }
+  }
+
+  async function startTyping(chatId, tag) {
+    const activeSocket = socket
+    if (!connectionOpen || typeof activeSocket?.sendPresenceUpdate !== 'function') return null
+
+    let active = true
+    let pending = Promise.resolve()
+    function updatePresence(type) {
+      pending = pending.then(async () => {
+        if (stopped || !connectionOpen || socket !== activeSocket || (type === 'composing' && !active)) return
+        try {
+          await activeSocket.sendPresenceUpdate(type, chatId)
+        } catch (error) {
+          logger.debug({ err: error, messageTag: tag, presence: type }, 'Gagal memperbarui indikator mengetik')
+        }
+      })
+      return pending
+    }
+
+    await updatePresence('composing')
+    const timer = repeatTimer(() => { void updatePresence('composing') }, 8_000)
+    timer.unref?.()
+
+    return async () => {
+      active = false
+      cancelRepeatTimer(timer)
+      await pending
+      await updatePresence('paused')
     }
   }
 
@@ -369,7 +404,7 @@ function createWhatsAppBot({
     const current = await database.getReplyState({ conversationId: chatId, messageId })
     if (current?.status !== 'ready') return
     let reply = current.response || response
-    const cameraPhoto = reply?.cameraCapture === true && reply.type === 'image' ? reply : null
+    const temporaryCapture = (reply?.cameraCapture === true || reply?.desktopCapture === true) && reply.type === 'image' ? reply : null
     const options = { messageId: outboundMessageId(chatId, messageId) }
     if (quoted) options.quoted = quoted
 
@@ -378,7 +413,7 @@ function createWhatsAppBot({
       await socket.sendMessage(chatId, buildMessageContent(reply), options)
     } catch (error) {
       logger.warn({ err: error, messageTag: tag, stage: 'send' }, 'Pengiriman balasan gagal')
-      if (reply.type !== 'text' && !cameraPhoto) {
+      if (reply.type !== 'text' && !temporaryCapture) {
         reply = { type: 'text', text: responseFallbackText(reply) }
         try {
           await database.replacePreparedReply({
@@ -411,7 +446,7 @@ function createWhatsAppBot({
       logger.error({ err: error, messageTag: tag, stage: 'record_sent' }, 'Balasan terkirim, tetapi status database belum tersimpan')
       scheduleDeliveryRetry(chatId, messageId)
     }
-    if (recorded) await cleanupCameraPhoto(cameraPhoto, tag)
+    if (recorded) await cleanupTemporaryCapture(temporaryCapture, tag)
   }
 
   async function recoverReplies() {
@@ -441,7 +476,8 @@ function createWhatsAppBot({
       return
     }
 
-    const text = extractText(message)
+    const imageMessage = normalizeMessageContent(message.message)?.imageMessage
+    const text = extractText(message) || (imageMessage ? 'Jelaskan isi gambar ini.' : null)
     if (!text) {
       logger.info({
         messageTag: tag,
@@ -462,7 +498,8 @@ function createWhatsAppBot({
 
     logger.info({ messageTag: tag, eventType, stage: 'received' }, 'Pesan pribadi diterima')
 
-    let unpreparedPhoto
+    let unpreparedCapture
+    let stopTyping
     try {
       const stored = await database.saveIncomingMessage({
         conversationId: chatId,
@@ -479,22 +516,36 @@ function createWhatsAppBot({
         return
       }
 
+      stopTyping = await startTyping(chatId, tag)
       logger.info({ messageTag: tag, stage: 'history' }, 'Membaca riwayat percakapan')
       const history = await database.getConversationHistory(chatId, historyLimit)
       let response
       try {
         logger.info({ messageTag: tag, stage: 'agent' }, 'Memproses pesan dengan agent')
+        let imageBuffer
+        if (imageMessage) {
+          const declaredBytes = Number(imageMessage.fileLength || 0)
+          if (declaredBytes > maxMediaBytes) throw new Error(`Gambar melebihi batas ${maxMediaBytes} byte`)
+          imageBuffer = await downloadMedia(message, 'buffer', {}, {
+            logger: baileysLogger,
+            reuploadRequest: socket.updateMediaMessage?.bind(socket)
+          })
+          if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length > maxMediaBytes) throw new Error('Gambar tidak tersedia atau terlalu besar')
+        }
         response = await agent.handle({
           chatId,
           senderIds: await resolveSenderIds(message, socket, logger),
           text,
-          history
+          history,
+          imageBuffer
         })
       } catch (error) {
         logger.error({ err: error, messageTag: tag, stage: 'agent' }, 'Agent gagal memproses pesan')
-        response = { type: 'text', text: ERROR_REPLY }
+        response = { type: 'text', text: imageMessage
+          ? (/melebihi batas|terlalu besar/i.test(error.message) ? 'Gambar terlalu besar untuk diproses. Kirim gambar yang lebih kecil.' : 'Gambar WhatsApp belum dapat diunduh atau dibaca. Coba kirim ulang.')
+          : ERROR_REPLY }
       }
-      if (response?.cameraCapture === true) unpreparedPhoto = response
+      if (response?.cameraCapture === true || response?.desktopCapture === true) unpreparedCapture = response
       const prepared = await database.prepareReply({
         conversationId: chatId,
         messageId,
@@ -502,15 +553,15 @@ function createWhatsAppBot({
         historyText: agent.historyText(response)
       })
       if (!prepared) {
-        await cleanupCameraPhoto(unpreparedPhoto, tag)
+        await cleanupTemporaryCapture(unpreparedCapture, tag)
         return
       }
-      unpreparedPhoto = undefined
+      unpreparedCapture = undefined
       logger.info({ messageTag: tag, stage: 'prepared', responseType: response.type }, 'Balasan tersimpan untuk dikirim')
       await sendPreparedReply(chatId, messageId, response, message)
     } catch (error) {
       logger.error({ err: error, messageTag: tag, stage: 'processing' }, 'Gagal memproses pesan')
-      await cleanupCameraPhoto(unpreparedPhoto, tag)
+      await cleanupTemporaryCapture(unpreparedCapture, tag)
       try {
         await socket.sendMessage(chatId, { text: ERROR_REPLY }, {
           quoted: message,
@@ -519,6 +570,8 @@ function createWhatsAppBot({
       } catch (sendError) {
         logger.error({ err: sendError, messageTag: tag, stage: 'error_reply' }, 'Gagal mengirim pemberitahuan kesalahan')
       }
+    } finally {
+      await stopTyping?.()
     }
   }
 

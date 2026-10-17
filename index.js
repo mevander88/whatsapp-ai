@@ -1,12 +1,15 @@
 const { loadConfig } = require('./src/config')
 const { createDatabase } = require('./src/database')
-const { createDeepSeekClient } = require('./src/deepseek')
+const { createAIClient } = require('./src/ai-client')
 const { createWhatsAppBot } = require('./src/whatsapp')
 const { createAgent } = require('./src/agent')
 const { createComputerTools } = require('./src/computer-tools')
 const { createCamera } = require('./src/camera')
 const { createResponseTools } = require('./src/response-tools')
 const { createPathPolicy } = require('./src/security')
+const { createImageReader } = require('./src/image-reader')
+const { createBrowserTools } = require('./src/browser-tools')
+const { createMcpTools } = require('./src/mcp-tools')
 
 async function main() {
   const config = loadConfig()
@@ -14,15 +17,18 @@ async function main() {
 
   await database.initialize()
 
-  const ai = createDeepSeekClient({
-    apiKey: config.deepseekApiKey,
-    apiUrl: config.deepseekApiUrl,
-    model: config.deepseekModel,
+  const ai = createAIClient({
+    apiKey: config.aiApiKey,
+    baseUrl: config.aiBaseUrl,
+    model: config.aiModel,
     systemPrompt: config.systemPrompt,
     timeoutMs: config.aiTimeoutMs
   })
 
   const pathPolicy = createPathPolicy(config.allowedPaths)
+  const imageReader = createImageReader({ ai, maxMediaBytes: config.maxMediaBytes, ocrLanguages: config.ocrLanguages })
+  const browserTools = createBrowserTools({ channel: config.browserChannel, headless: config.browserHeadless })
+  const mcpTools = createMcpTools({ servers: config.mcpServers, imageReader })
   const camera = createCamera({
     deviceName: config.cameraDeviceName,
     ffmpegPath: config.cameraFfmpegPath,
@@ -33,6 +39,7 @@ async function main() {
     allowedApps: config.allowedApps,
     allowedCmdCommands: config.allowedCmdCommands,
     camera,
+    imageReader,
     maxFileBytes: config.maxFileBytes,
     maxMediaBytes: config.maxMediaBytes
   })
@@ -41,9 +48,13 @@ async function main() {
     ai,
     database,
     computerTools,
+    imageReader,
+    browserTools,
+    mcpTools,
     responseTools,
     ownerIds: config.ownerIds,
-    approvalTtlMinutes: config.approvalTtlMinutes
+    approvalTtlMinutes: config.approvalTtlMinutes,
+    godmodeTtlMinutes: config.godmodeTtlMinutes
   })
 
   const bot = createWhatsAppBot({
@@ -55,7 +66,8 @@ async function main() {
     connectTimeoutMs: config.whatsappConnectTimeoutMs,
     maxReconnectAttempts: config.whatsappMaxReconnectAttempts,
     whatsappVersion: config.whatsappVersion,
-    cleanupGeneratedFile: camera.cleanup
+    maxMediaBytes: config.maxMediaBytes,
+    cleanupGeneratedFile: computerTools.cleanupGeneratedFile
   })
 
   await bot.start()
@@ -66,6 +78,7 @@ async function main() {
     isShuttingDown = true
     console.log(`Menerima ${signal}. Menghentikan bot...`)
     await bot.stop()
+    await Promise.allSettled([imageReader.close(), browserTools.close(), mcpTools.close()])
     await database.close()
     process.exit(0)
   }

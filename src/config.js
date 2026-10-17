@@ -1,5 +1,6 @@
 const path = require('node:path')
 const dotenv = require('dotenv')
+const { parseMcpServers } = require('./mcp-tools')
 
 function positiveInteger(value, fallback, name) {
   if (value === undefined || value === '') return fallback
@@ -44,10 +45,10 @@ function loadConfig(environment = process.env) {
   }
 
   return {
-    deepseekApiKey: env.HF_TOKEN?.trim() || env.DEEPSEEK_API_KEY.trim(),
+    aiApiKey: env.HF_TOKEN?.trim() || env.DEEPSEEK_API_KEY.trim(),
     databaseUrl: env.DATABASE_URL.trim(),
-    deepseekApiUrl: env.DEEPSEEK_API_URL?.trim() || 'https://api.howtofix.id/v1/chat/completions',
-    deepseekModel: env.DEEPSEEK_MODEL?.trim() || 'deepseek-v4.1-flash',
+    aiBaseUrl: env.AI_BASE_URL?.trim() || env.AI_API_URL?.trim() || env.DEEPSEEK_API_URL?.trim() || 'https://api.howtofix.id/v1',
+    aiModel: env.AI_MODEL?.trim() || env.DEEPSEEK_MODEL?.trim() || 'deepseek-v4.1-flash',
     systemPrompt:
       env.SYSTEM_PROMPT?.trim() ||
       'Anda adalah asisten WhatsApp yang ramah dan membantu. Jawab dengan ringkas dalam Bahasa Indonesia.',
@@ -71,7 +72,12 @@ function loadConfig(environment = process.env) {
     ).map((item) => item.toLowerCase()),
     cameraDeviceName: env.CAMERA_DEVICE_NAME?.trim() || '',
     cameraFfmpegPath: env.CAMERA_FFMPEG_PATH?.trim() || 'ffmpeg',
+    ocrLanguages: commaSeparated(env.OCR_LANGUAGES, ['eng', 'ind']),
+    browserChannel: env.BROWSER_CHANNEL?.trim() || 'msedge',
+    browserHeadless: env.BROWSER_HEADLESS?.trim().toLowerCase() === 'true',
+    mcpServers: parseMcpServers(env.MCP_SERVERS_JSON),
     approvalTtlMinutes: positiveInteger(env.AGENT_APPROVAL_TTL_MINUTES, 10, 'AGENT_APPROVAL_TTL_MINUTES'),
+    godmodeTtlMinutes: positiveInteger(env.AGENT_GODMODE_TTL_MINUTES, 30, 'AGENT_GODMODE_TTL_MINUTES'),
     maxFileBytes: positiveInteger(env.AGENT_MAX_FILE_BYTES, 32_768, 'AGENT_MAX_FILE_BYTES'),
     maxMediaBytes: positiveInteger(env.AGENT_MAX_MEDIA_BYTES, 10_485_760, 'AGENT_MAX_MEDIA_BYTES')
   }
