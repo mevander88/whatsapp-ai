@@ -21,33 +21,9 @@ Bot WhatsApp berbasis Node.js yang menghubungkan pesan pribadi ke model AI melal
 - Membaca screenshot dengan OCR cepat atau analisis visual detail.
 - Mengambil source web, mengirim gambar, mengisi formulir, dan memakai server MCP.
 
-## Arsitektur
+## Cara kerja singkat
 
-```text
-WhatsApp
-   │
-   ▼
-@itsukichan/baileys ──► message queue ──► agent
-                              │             │
-                              ▼             ├── AI API (OpenAI-compatible)
-                         PostgreSQL         ├── computer tools
-                                            ├── browser tools
-                                            ├── OCR / image reader
-                                            └── MCP servers
-```
-
-| Modul | Tanggung jawab |
-| --- | --- |
-| `index.js` | Dependency dan lifecycle aplikasi. |
-| `src/whatsapp.js` | Koneksi Baileys, event pesan, antrean chat, retry, dan reconnect. |
-| `src/agent.js` | Intent, pemilihan tool, approval, godmode, progres, dan pemulihan. |
-| `src/task-state.js` | Routing, checkpoint, bukti penyelesaian, dan klasifikasi kegagalan. |
-| `src/ai-client.js` | Chat Completions melalui SDK OpenAI. |
-| `src/computer-tools.js` | File, sistem, aplikasi, PowerShell, layar, mouse, dan keyboard. |
-| `src/browser-tools.js` | Browser persisten, pencarian, formulir, dan source web. |
-| `src/image-reader.js` | Analisis visual dan OCR dengan koordinat teks. |
-| `src/mcp-tools.js` | Koneksi dan routing tool MCP. |
-| `src/database.js` | Schema dan akses data PostgreSQL. |
+Setelah terhubung, bot menerima pesan WhatsApp, memahami permintaan melalui model AI, lalu memberikan jawaban atau menjalankan tindakan yang tersedia. Riwayat percakapan dan status tugas disimpan agar pekerjaan dapat dilanjutkan dan dipantau dengan lebih konsisten.
 
 ## Persyaratan
 
