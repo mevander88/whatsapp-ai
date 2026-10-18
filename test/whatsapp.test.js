@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events')
 const {
   buildMessageContent,
   connectionFailureMessage,
+  createBaileysLogger,
   createChatQueue,
   createWhatsAppBot,
   extractText,
@@ -20,6 +21,32 @@ function createTestLogger(entries) {
     warn: (...args) => entries.push(['warn', ...args])
   }
 }
+
+test('timeout init queries Baileys diperlakukan sebagai gangguan sinkronisasi nonfatal', () => {
+  const entries = []
+  const logger = createTestLogger(entries)
+  const baileysLogger = createBaileysLogger(logger, () => true)
+
+  baileysLogger.error({
+    err: {
+      message: 'Timed Out',
+      output: { statusCode: 408 }
+    }
+  }, "unexpected error in 'init queries'")
+
+  assert.equal(entries.some((entry) => entry[0] === 'error'), false)
+  assert.ok(entries.some((entry) => entry[0] === 'warn' && entry[1]?.connectionOpen === true))
+  assert.ok(entries.some((entry) => String(entry.at(-1)).includes('socket tetap dipantau')))
+})
+
+test('error Baileys lain tetap dicatat sebagai error', () => {
+  const entries = []
+  const baileysLogger = createBaileysLogger(createTestLogger(entries))
+
+  baileysLogger.error({ err: new Error('rusak') }, 'connection errored')
+
+  assert.ok(entries.some((entry) => entry[0] === 'error' && entry.at(-1) === 'connection errored'))
+})
 
 const testDatabase = {
   recoverInterruptedMessages: async () => 0,
@@ -159,6 +186,7 @@ test('bot memakai versi terbaru, menampilkan status QR, dan menyimpan kredensial
 
   assert.deepEqual(socketOptions.version, [2, 3000, 123])
   assert.equal(socketOptions.printQRInTerminal, true)
+  assert.equal(socketOptions.fireInitQueries, false)
   assert.equal(saveCredsCalled, true)
   assert.ok(entries.some((entry) => entry.includes('QR login WhatsApp siap. Pindai melalui menu Perangkat tertaut di aplikasi WhatsApp.')))
   assert.equal(JSON.stringify(entries).includes('nilai-qr-rahasia'), false)

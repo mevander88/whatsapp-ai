@@ -1,0 +1,58 @@
+[
+  {
+    "id": "image-search-send",
+    "input": "Carikan gambar kucing oranye yang jelas lalu kirim ke sini",
+    "expectedGroups": ["web"],
+    "requiredEvidence": ["media_ready"],
+    "manualSuccess": "Gambar valid diterima sebagai media WhatsApp, bukan hanya tautan."
+  },
+  {
+    "id": "multi-source-research",
+    "input": "Cari tiga pilihan laptop, bandingkan, lalu rekomendasikan satu",
+    "expectedGroups": ["web"],
+    "requiredEvidence": ["source_read"],
+    "manualSuccess": "Jawaban membandingkan sumber yang benar-benar dibaca."
+  },
+  {
+    "id": "file-terminal",
+    "input": "Buat file hello.js di VS Code, jalankan, lalu kirim hasilnya",
+    "expectedGroups": ["files", "desktop"],
+    "requiredEvidence": ["artifact_checked", "state_checked"],
+    "manualSuccess": "File tersedia, isi sesuai, dan hasil eksekusi diperiksa."
+  },
+  {
+    "id": "project-diagnosis",
+    "input": "Cari penyebab npm start gagal dan perbaiki sampai dapat dijalankan",
+    "expectedGroups": ["web", "files"],
+    "requiredEvidence": ["artifact_checked", "source_read"],
+    "manualSuccess": "Perbaikan diuji dengan perintah yang sebelumnya gagal."
+  },
+  {
+    "id": "conversation-reference",
+    "input": "Kirim gambar kedua tadi",
+    "expectedGroups": ["web"],
+    "requiredEvidence": ["media_ready"],
+    "manualSuccess": "Agent memakai kandidat kedua dari status tugas sebelumnya."
+  },
+  {
+    "id": "ambiguous-image",
+    "input": "Kirim gambarnya",
+    "expectedGroups": ["web"],
+    "requiredEvidence": ["media_ready"],
+    "manualSuccess": "Agent memakai konteks sebelumnya atau meminta satu klarifikasi."
+  },
+  {
+    "id": "desktop-action",
+    "input": "Buka Chrome",
+    "expectedGroups": ["desktop"],
+    "requiredEvidence": ["state_checked"],
+    "manualSuccess": "Agent memeriksa proses atau tampilan sebelum menyatakan Chrome terbuka."
+  },
+  {
+    "id": "failure-recovery",
+    "input": "Buka website produk dan ambil informasi harganya",
+    "expectedGroups": ["web"],
+    "requiredEvidence": ["source_read"],
+    "manualSuccess": "Timeout atau URL rusak memicu pendekatan lain tanpa mengulang panggilan identik."
+  }
+]

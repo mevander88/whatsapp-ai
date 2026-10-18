@@ -21,7 +21,7 @@ function createClient(fetchImpl, overrides = {}) {
   })
 }
 
-test('OpenAI SDK memakai base URL HowToFix, token, model, dan riwayat', async () => {
+test('OpenAI SDK memakai base URL penyedia, secret key, model, dan riwayat', async () => {
   let request
   const client = createClient(async (url, options) => {
     request = { url: String(url), options }
@@ -32,7 +32,7 @@ test('OpenAI SDK memakai base URL HowToFix, token, model, dan riwayat', async ()
   const body = JSON.parse(request.options.body)
 
   assert.equal(answer, 'Jawaban bot')
-  assert.equal(sdkBaseUrl('https://api.howtofix.id/v1/chat/completions'), 'https://api.howtofix.id/v1')
+  assert.equal(sdkBaseUrl('https://api.rindri.com/v1/chat/completions'), 'https://api.rindri.com/v1')
   assert.equal(request.url, 'https://example.test/v1/chat/completions')
   assert.equal(new Headers(request.options.headers).get('authorization'), 'Bearer token-rahasia')
   assert.equal(body.model, 'deepseek-v4.1-flash')
@@ -82,33 +82,24 @@ test('respons gagal dari SDK menunjukkan status tanpa membocorkan token', async 
   })
 })
 
-test('token ditolak menghasilkan diagnosis aman', async () => {
+test('secret key ditolak menghasilkan diagnosis aman', async () => {
   const client = createClient(async () => sdkResponse({ error: { message: 'Unauthorized' } }, 401))
-  await assert.rejects(() => client.reply([]), /Token AI ditolak \(401\)/)
+  await assert.rejects(() => client.reply([]), /Secret key AI ditolak \(401\).*apikey.txt/)
 })
 
-test('403 verifikasi akun dari SDK memberi petunjuk Account Bindings', async () => {
+test('403 memberi diagnosis penyedia tanpa asumsi verifikasi akun', async () => {
   const client = createClient(async () => sdkResponse({
     error: { code: 'verification_required', message: 'account is not verified' }
   }, 403))
   await assert.rejects(() => client.reply([]), (error) => {
-    assert.match(error.message, /Gateway HowToFix mengembalikan verification_required/)
-    assert.match(error.message, /Account Bindings/)
-    assert.match(error.message, /Jika sudah terhubung/)
+    assert.match(error.message, /Akses API AI ditolak \(403\)/)
+    assert.match(error.message, /Periksa izin akun dan model/)
     assert.equal(error.message.includes('token-rahasia'), false)
     return true
   })
 })
 
-test('403 dengan JSON terpotong dari penyedia tetap mengenali verifikasi akun', async () => {
-  const client = createClient(async () => sdkResponse(
-    '{"error":{"message":"This API key belongs to an account that has not finished verification.","code":"verification_required"}',
-    403
-  ))
-  await assert.rejects(() => client.reply([]), /Gateway HowToFix mengembalikan verification_required/)
-})
-
-test('403 tanpa kode verifikasi menunjukkan pembatasan akses model', async () => {
+test('403 dengan pembatasan model tetap aman', async () => {
   const client = createClient(async () => sdkResponse({ error: { code: 'model_forbidden' } }, 403))
-  await assert.rejects(() => client.reply([]), /Token AI tidak diizinkan mengakses model deepseek-v4.1-flash/)
+  await assert.rejects(() => client.reply([]), /model deepseek-v4.1-flash/)
 })

@@ -221,7 +221,7 @@ test('godmode dapat mengirim tangkapan layar dan input desktop melalui tool khus
     spawnImpl
   })
 
-  for (const name of ['capture_desktop_screenshot', 'focus_application', 'click_screen', 'type_text', 'press_keys']) {
+  for (const name of ['capture_desktop_screenshot', 'focus_application', 'get_cursor_position', 'move_cursor', 'click_screen', 'drag_screen', 'scroll_screen', 'type_text', 'press_keys', 'press_windows_shortcut']) {
     assert.equal(tools.has(name), false)
     assert.equal(tools.hasGodmode(name), true)
   }
@@ -240,10 +240,24 @@ test('godmode dapat mengirim tangkapan layar dan input desktop melalui tool khus
   await tools.executeGodmode('press_keys', { key: 'S', modifiers: ['ctrl'] })
   assert.match(scripts[3], /SendWait\('\^s'\)/)
 
+  await tools.executeGodmode('get_cursor_position', {})
+  assert.match(scripts[4], /Cursor\]::Position/)
+  await tools.executeGodmode('move_cursor', { x: -50, y: 300 })
+  assert.match(scripts[5], /Point\]::new\(-50, 300\)/)
+  await tools.executeGodmode('drag_screen', { fromX: 10, fromY: 20, toX: 300, toY: 400 })
+  assert.match(scripts[6], /mouse_event\(2/)
+  assert.match(scripts[6], /mouse_event\(4/)
+  await tools.executeGodmode('scroll_screen', { vertical: -720, horizontal: 120 })
+  assert.match(scripts[7], /mouse_event\(2048/)
+  assert.match(scripts[7], /mouse_event\(4096/)
+  await tools.executeGodmode('press_windows_shortcut', { key: 'r' })
+  assert.match(scripts[8], /keybd_event\(91/)
+  assert.match(scripts[8], /keybd_event\(82/)
+
   const screenshot = await tools.executeGodmode('capture_desktop_screenshot', {})
   assert.equal(screenshot.response.type, 'image')
   assert.equal(screenshot.response.desktopCapture, true)
-  assert.match(scripts[4], /CopyFromScreen/)
+  assert.match(scripts[9], /CopyFromScreen/)
   await fs.stat(screenshot.response.filePath)
   await tools.cleanupGeneratedFile(screenshot.response.filePath)
   await assert.rejects(() => fs.stat(screenshot.response.filePath), /ENOENT/)
@@ -255,6 +269,7 @@ test('inspect_desktop membaca screenshot dan membersihkan file sementara', async
   t.after(async () => fs.rm(captureDir, { recursive: true, force: true }))
   let capturedFile
   let origin
+  let ocrOnly
   const spawnImpl = (_file, args) => {
     const script = args[3]
     const child = new EventEmitter()
@@ -275,10 +290,11 @@ test('inspect_desktop membaca screenshot dan membersihkan file sementara', async
     pathPolicy: createPathPolicy([path.resolve('agent-workspace')]),
     allowedApps: [], maxFileBytes: 1_024, maxMediaBytes: 2_048,
     desktopCaptureDir: captureDir, platform: 'win32', spawnImpl,
-    imageReader: { analyze: async (_buffer, options) => { origin = options.origin; return { method: 'ocr', description: 'Tombol Buka' } } }
+    imageReader: { analyze: async (_buffer, options) => { origin = options.origin; ocrOnly = options.ocrOnly; return { method: 'ocr', description: 'Tombol Buka' } } }
   })
   const result = await tools.executeGodmode('inspect_desktop', {})
   assert.match(result.response.text, /Tombol Buka/)
   assert.deepEqual(origin, { x: -120, y: 30 })
+  assert.equal(ocrOnly, true)
   await assert.rejects(() => fs.stat(capturedFile), /ENOENT/)
 })

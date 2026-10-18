@@ -1,25 +1,20 @@
 const OpenAI = require('openai')
 
 function sdkBaseUrl(baseUrl) {
-  const url = new URL(baseUrl || 'https://api.howtofix.id/v1')
+  const url = new URL(baseUrl)
   url.pathname = url.pathname.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '')
   return url.toString().replace(/\/$/, '')
 }
 
 function aiError(error, model) {
   if (error?.status === 401) {
-    return new Error('Token AI ditolak (401). Isi HF_TOKEN di .env dengan API key HowToFix dari Console > Tokens yang berawalan sk-. Access token untuk verifikasi akun tidak dapat dipakai sebagai API key.')
+    return new Error('Secret key AI ditolak (401). Periksa baris pertama apikey.txt.')
   }
   if (error?.status === 403) {
-    const reason = error?.error || error
-    const details = `${reason?.code || ''} ${reason?.message || ''} ${error?.message || ''}`
-    if (/verification_required|not finished verification|bind your discord account/i.test(details)) {
-      return new Error('Gateway HowToFix mengembalikan verification_required (403). Periksa Account Bindings di https://howtofix.id/security. Jika sudah terhubung, pastikan API key berasal dari akun yang sama dan hubungi dukungan HowToFix dengan request ID dari Usage Logs.')
-    }
-    return new Error(`Token AI tidak diizinkan mengakses model ${model} (403). Periksa model yang tersedia untuk token melalui GET /v1/models dan daftar izin token di konsol HowToFix.`)
+    return new Error(`Akses API AI ditolak (403) untuk model ${model}. Periksa izin akun dan model pada penyedia API.`)
   }
   if (Number.isInteger(error?.status)) {
-    return new Error(`Layanan AI mengembalikan status ${error.status} untuk model ${model}. Periksa akses model dan kondisi layanan HowToFix.`)
+    return new Error(`Layanan AI mengembalikan status ${error.status} untuk model ${model}. Periksa ID model, izin akses, dan kondisi penyedia API.`)
   }
   return error
 }
