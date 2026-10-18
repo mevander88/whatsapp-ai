@@ -1,163 +1,357 @@
 # WhatsApp AI Bot
 
-Bot WhatsApp sederhana yang membalas chat pribadi menggunakan model AI melalui API OpenAI-compatible Rindri. Riwayat percakapan disimpan di PostgreSQL dan sesi login WhatsApp disimpan secara lokal agar QR tidak perlu dipindai ulang setiap kali proses dimulai.
+> **Status: Beta (`v1.0.0-beta.1`)**
+>
+> Rilis ini ditujukan untuk pengujian dan evaluasi. API internal, konfigurasi, dan perilaku otomasi masih dapat berubah sebelum rilis stabil.
 
-Koneksi WhatsApp menggunakan `@itsukichan/baileys`.
+Bot WhatsApp berbasis Node.js yang menghubungkan pesan pribadi ke model AI melalui API OpenAI-compatible. Aplikasi menyimpan riwayat dan status pekerjaan di PostgreSQL, mempertahankan sesi WhatsApp melalui Baileys, serta menyediakan otomasi komputer untuk pemilik yang terdaftar.
+
+> Proyek ini memakai koneksi WhatsApp Web tidak resmi melalui `@itsukichan/baileys`. Perubahan protokol WhatsApp dapat memengaruhi koneksi dan proses login.
+
+## Fitur utama
+
+- Membalas teks dan membaca gambar dari chat pribadi.
+- Menyimpan riwayat, status pengiriman, audit tindakan, dan checkpoint tugas di PostgreSQL.
+- Mempertahankan sesi WhatsApp agar QR tidak perlu dipindai pada setiap startup.
+- Mendukung teks, media, tombol, daftar, dan polling.
+- Menjalankan tugas bertahap dengan progres, verifikasi, retry alternatif, dan pembatalan realtime.
+- Membedakan pertanyaan dari perintah sebelum memberikan akses tool.
+- Menyusun inventaris kemampuan aktual pada setiap pesan.
+- Mengontrol aplikasi, mouse, keyboard, layar, kamera, file, PowerShell, dan browser pada Windows.
+- Membaca screenshot dengan OCR cepat atau analisis visual detail.
+- Mengambil source web, mengirim gambar, mengisi formulir, dan memakai server MCP.
+
+## Arsitektur
+
+```text
+WhatsApp
+   │
+   ▼
+@itsukichan/baileys ──► message queue ──► agent
+                              │             │
+                              ▼             ├── AI API (OpenAI-compatible)
+                         PostgreSQL         ├── computer tools
+                                            ├── browser tools
+                                            ├── OCR / image reader
+                                            └── MCP servers
+```
+
+| Modul | Tanggung jawab |
+| --- | --- |
+| `index.js` | Dependency dan lifecycle aplikasi. |
+| `src/whatsapp.js` | Koneksi Baileys, event pesan, antrean chat, retry, dan reconnect. |
+| `src/agent.js` | Intent, pemilihan tool, approval, godmode, progres, dan pemulihan. |
+| `src/task-state.js` | Routing, checkpoint, bukti penyelesaian, dan klasifikasi kegagalan. |
+| `src/ai-client.js` | Chat Completions melalui SDK OpenAI. |
+| `src/computer-tools.js` | File, sistem, aplikasi, PowerShell, layar, mouse, dan keyboard. |
+| `src/browser-tools.js` | Browser persisten, pencarian, formulir, dan source web. |
+| `src/image-reader.js` | Analisis visual dan OCR dengan koordinat teks. |
+| `src/mcp-tools.js` | Koneksi dan routing tool MCP. |
+| `src/database.js` | Schema dan akses data PostgreSQL. |
 
 ## Persyaratan
 
-- Node.js 20 atau lebih baru
-- PostgreSQL yang dapat diakses oleh aplikasi
-- Secret key API dan base URL dalam `apikey.txt`
-- Akun WhatsApp untuk dihubungkan
-- FFmpeg yang tersedia di `PATH` untuk fitur foto kamera di Windows
+### Wajib
 
-## Menjalankan bot
+- Node.js 20 atau lebih baru.
+- PostgreSQL.
+- Akun WhatsApp yang dapat menautkan perangkat.
+- Secret key dan base URL penyedia API OpenAI-compatible.
 
-1. Install dependency:
+### Fitur Windows
 
-   ```bash
-   npm install
-   ```
+- Sesi desktop Windows aktif untuk kontrol aplikasi, mouse, keyboard, dan screenshot.
+- FFmpeg di `PATH` untuk kamera.
+- Microsoft Edge atau Google Chrome untuk otomasi browser.
 
-2. Salin `.env.example` menjadi `.env`, lalu isi `DATABASE_URL`. Pastikan `apikey.txt` tersedia di folder proyek.
+Fitur chat dan AI tetap dapat berjalan tanpa fitur desktop Windows.
 
-3. Pastikan database pada `DATABASE_URL` sudah dibuat. Tabel yang diperlukan akan dibuat otomatis.
+## Instalasi
 
-4. Jalankan bot:
+### 1. Pasang dependency
 
-   ```bash
-   npm start
-   ```
+```bash
+npm install
+```
 
-5. Pada login pertama, pindai QR yang muncul di terminal melalui menu **Perangkat tertaut** di WhatsApp.
+### 2. Buat database
 
-Saat startup, bot mengambil `client_revision` terbaru langsung dari WhatsApp Web, kemudian memakai sumber Baileys sebagai fallback. Terminal akan menampilkan pesan `QR login WhatsApp siap` sebelum QR dapat dipindai dan `WhatsApp terhubung` setelah login berhasil.
+```powershell
+createdb -U postgres whatsapp_ai
+```
 
-Folder `auth_info_baileys` menyimpan sesi login. Pertahankan folder ini di server atau volume persisten dan jangan membagikannya. Bot akan mencoba terhubung kembali saat koneksi sementara terputus. Jika perangkat ditautkan keluar dari WhatsApp, sesi lama dihapus dan QR baru akan muncul.
+Aplikasi membuat tabel dan indeks secara otomatis. Nama database harus sama dengan nilai pada `DATABASE_URL`.
+
+### 3. Siapkan `.env`
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Konfigurasi minimum:
+
+```dotenv
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/whatsapp_ai
+OWNER_NUMBERS=6281234567890
+```
+
+Gunakan nomor WhatsApp dengan kode negara tanpa tanda `+`. Pisahkan beberapa nomor dengan koma.
+
+### 4. Siapkan kredensial AI
+
+Buat `apikey.txt` di root proyek. Baris pertama berisi secret key. Isi berikutnya harus mencantumkan frasa `base URL` dan endpoint HTTPS OpenAI-compatible.
+
+```text
+sk-SECRET_KEY_ANDA
+
+OpenAI-compatible base URL: https://provider.example/v1
+```
+
+`apikey.txt` dan `.env` diabaikan oleh Git. Jangan commit kedua file tersebut. Gunakan `AI_KEY_FILE` bila kredensial berada di lokasi lain.
+
+### 5. Jalankan aplikasi
+
+```bash
+npm start
+```
+
+Pada login pertama, pindai QR terminal melalui **WhatsApp → Perangkat tertaut → Tautkan perangkat**. Tunggu log `WhatsApp terhubung` sebelum mengirim pesan.
+
+Folder `auth_info_baileys` menyimpan sesi login. Simpan pada volume persisten dan perlakukan isinya sebagai kredensial.
 
 ## Konfigurasi
 
-Konfigurasi wajib:
+Seluruh variabel tersedia pada [.env.example](./.env.example).
 
-- `DATABASE_URL` di `.env`: connection string PostgreSQL.
-- `apikey.txt` di folder proyek: baris pertama berisi secret key. Baris petunjuk pemakaian harus memuat `base URL https://api.rindri.com/v1`.
+### AI dan database
 
-Contoh format `apikey.txt` dengan nilai pengganti, tanpa key asli:
+| Variabel | Default | Keterangan |
+| --- | --- | --- |
+| `DATABASE_URL` | wajib | Connection string PostgreSQL. |
+| `AI_KEY_FILE` | `./apikey.txt` | File secret key dan base URL. |
+| `AI_MODEL` | `deepseek-v4.1-flash` | ID model pada penyedia API. |
+| `SYSTEM_PROMPT` | prompt bawaan | Instruksi dasar percakapan. |
+| `AI_TIMEOUT_MS` | `30000` | Timeout AI dalam milidetik. |
+| `HISTORY_LIMIT` | `10` | Jumlah riwayat yang dikirim ke model. |
 
-```text
-sk-ISI_SECRET_KEY_ANDA
+### WhatsApp
 
-Endpoint: https://api.rindri.com/
-Cara pakai: OpenAI-compatible: base URL https://api.rindri.com/v1 + header Authorization: Bearer <Secret Key>.
+| Variabel | Default | Keterangan |
+| --- | --- | --- |
+| `SESSION_PATH` | `./auth_info_baileys` | Folder sesi Baileys. |
+| `LOG_LEVEL` | `info` | Level log. Gunakan `debug` untuk diagnosis. |
+| `WHATSAPP_CONNECT_TIMEOUT_MS` | `30000` | Timeout pembukaan koneksi. |
+| `WHATSAPP_MAX_RECONNECT_ATTEMPTS` | `5` | Maksimum reconnect otomatis. |
+| `WHATSAPP_WEB_VERSION` | kosong | Override `2,3000,revision`; sebaiknya kosong. |
+
+### Akses komputer
+
+| Variabel | Default | Keterangan |
+| --- | --- | --- |
+| `OWNER_NUMBERS` | kosong | Nomor yang boleh memakai kemampuan komputer. |
+| `AGENT_ALLOWED_PATHS` | `./agent-workspace` | Root file dalam mode biasa. |
+| `AGENT_ALLOWED_APPS` | kosong | Aplikasi yang diizinkan dalam mode biasa. |
+| `AGENT_ALLOWED_CMD_COMMANDS` | daftar diagnostik | Perintah CMD yang dapat diajukan. Isi `none` untuk menonaktifkan. |
+| `AGENT_APPROVAL_TTL_MINUTES` | `10` | Masa berlaku approval. |
+| `AGENT_GODMODE_TTL_MINUTES` | `30` | Masa aktif godmode. |
+| `AGENT_MAX_FILE_BYTES` | `32768` | Batas file teks. |
+| `AGENT_MAX_MEDIA_BYTES` | `10485760` | Batas media. |
+
+### Kamera, OCR, browser, dan MCP
+
+| Variabel | Default | Keterangan |
+| --- | --- | --- |
+| `CAMERA_DEVICE_NAME` | perangkat pertama | Nama kamera DirectShow. |
+| `CAMERA_FFMPEG_PATH` | `ffmpeg` | Executable FFmpeg. |
+| `OCR_LANGUAGES` | `eng,ind` | Bahasa Tesseract.js. |
+| `BROWSER_CHANNEL` | `msedge` | `msedge` atau `chrome`. |
+| `BROWSER_HEADLESS` | `false` | Jalankan browser tanpa jendela. |
+| `BROWSER_USER_DATA_DIR` | `./agent-workspace/browser-profile` | Profil browser persisten bot. |
+| `MCP_SERVERS_JSON` | kosong | Daftar server MCP dalam JSON satu baris. |
+
+Contoh MCP:
+
+```dotenv
+MCP_SERVERS_JSON=[{"name":"internal","url":"https://example.com/mcp","headers":{"Authorization":"Bearer token"}}]
 ```
 
-Bot membaca secret key dan base URL dari file tersebut saat mulai, lalu memakai paket `openai` untuk Chat Completions. Secret key dikirim dalam header `Authorization: Bearer`, sesuai petunjuk di `apikey.txt`. File ini diabaikan oleh Git; jangan unggah atau bagikan isinya. Nilai lama `HF_TOKEN`, `DEEPSEEK_API_KEY`, `AI_BASE_URL`, `AI_API_URL`, dan `DEEPSEEK_API_URL` di `.env` tidak dipakai lagi. Jika file berada di lokasi lain, isi `AI_KEY_FILE` dengan path-nya.
+Hanya endpoint HTTPS atau HTTP localhost yang diterima.
 
-Jika log menampilkan `401`, periksa secret key di baris pertama `apikey.txt`. Untuk `403`, periksa izin akun dan akses model pada penyedia API. Daftar model tersedia melalui `GET https://api.rindri.com/v1/models` dengan header Authorization yang sama. Setelah mengubah key, URL, atau model, hentikan proses bot yang lama dan jalankan lagi dengan `npm start`.
+## Mode akses
 
-Konfigurasi opsional tersedia di `.env.example`, termasuk model AI, system prompt, jumlah riwayat, timeout, lokasi sesi, dan level log. Gunakan `AI_MODEL` untuk memilih ID model; nama lama `DEEPSEEK_MODEL` masih diterima.
+### Pengguna biasa
 
-- `WHATSAPP_CONNECT_TIMEOUT_MS`: batas waktu satu percobaan koneksi WhatsApp.
-- `WHATSAPP_MAX_RECONNECT_ATTEMPTS`: jumlah maksimum percobaan koneksi ulang sebelum pengguna perlu memeriksa masalah dan menjalankan ulang bot.
-- `WHATSAPP_WEB_VERSION`: override sementara dalam format `2,3000,revision`. Biarkan kosong agar bot mengambil versi langsung dari WhatsApp Web.
+Pengguna selain owner hanya mendapat jawaban umum. Tool komputer tidak diberikan kepada model.
 
-Model bawaan adalah **DeepSeek V4.1 Flash** dengan ID `deepseek-v4.1-flash`. ID ini tersedia pada daftar model Rindri saat konfigurasi diuji. Isi `AI_MODEL` di `.env` bila ingin memakai model lain yang tersedia untuk key tersebut.
+### Owner dengan approval
 
-## AI Agent dan akses komputer
+Di luar godmode, tindakan komputer dibatasi konfigurasi dan memerlukan approval melalui tombol **Setujui/Tolak** atau balasan:
 
-Isi `OWNER_NUMBERS` dengan nomor WhatsApp pemilik. Hanya nomor tersebut yang dapat melihat dan menjalankan tool komputer. Nomor lain tetap dapat memakai bot untuk pertanyaan umum.
+```text
+SETUJUI <kode>
+TOLAK <kode>
+```
 
-`AGENT_ALLOWED_PATHS` menentukan folder yang boleh dibaca atau ditulis agent dalam mode biasa. Nilai bawaan adalah `./agent-workspace`; buat folder tersebut sebelum meminta agent menampilkan atau membaca isinya. `AGENT_ALLOWED_APPS` menentukan aplikasi yang boleh dibuka. Dalam mode biasa, akses komputer memerlukan persetujuan pemilik melalui tombol WhatsApp atau balasan `SETUJUI <kode>` di chat yang sama. Bot tidak meminta persetujuan tindakan melalui popup di komputer.
+File sensitif seperti `.env`, `apikey.txt`, sesi WhatsApp, private key, `.git`, dan `node_modules` diblokir oleh path policy.
 
-Agent dapat menjalankan perintah CMD diagnostik `ver`, `whoami`, `hostname`, `ipconfig`, `tasklist`, dan `systeminfo` di Windows setelah persetujuan pemilik. Perintah yang tersedia dapat dibatasi lewat `AGENT_ALLOWED_CMD_COMMANDS` di `.env`; isi `none` untuk menonaktifkannya. Perintah bebas dan argumen tambahan tidak diterima. Hasil perintah yang disetujui dapat dikirim ke AI untuk dirangkum.
+### Godmode
 
-Pemilik juga dapat meminta satu foto kamera dengan pesan seperti `Jepret kamera dan kirim fotonya`. Bot meminta persetujuan, memakai kamera video pertama yang dideteksi FFmpeg, lalu mengirim foto langsung ke chat pemilik. Jika ingin memilih kamera tertentu, isi `CAMERA_DEVICE_NAME` di `.env` sesuai nama perangkat dari `ffmpeg -list_devices true -f dshow -i dummy`. File foto sementara dihapus setelah pengiriman berhasil.
+Aktifkan dari chat pribadi owner:
 
-Kemampuan komputer lainnya:
+```text
+/godmode
+```
 
-- melihat informasi sistem dasar;
-- menampilkan folder dan membaca file teks berukuran terbatas;
-- menulis file teks dalam folder yang diizinkan;
-- membuka aplikasi dari daftar izin;
-- mengirim file lokal yang diizinkan sebagai gambar, video, audio, atau dokumen.
+Godmode menjalankan tindakan tanpa approval tambahan dengan hak akses akun Windows bot. Kemampuannya mencakup PowerShell, aplikasi, file, browser, kamera, screenshot, mouse, keyboard, OCR, dan server MCP yang dikonfigurasi.
 
-Contoh: kirim `Jalankan systeminfo di CMD dan cek RAM komputer saya`, lalu setujui perintah yang ditampilkan bot. Untuk informasi RAM saja, bot juga dapat memakai tool informasi sistem tanpa CMD.
+| Perintah | Fungsi |
+| --- | --- |
+| `/godmode` | Mengaktifkan godmode. |
+| `/godmode status` | Menampilkan sisa waktu. |
+| `/godmode off` | Mematikan godmode. |
+| `/exec <PowerShell>` | Menjalankan PowerShell langsung. |
+| `/cancel`, `/batal` | Membatalkan tugas aktif. |
 
-Dalam mode biasa, file rahasia seperti `.env`, `apikey.txt`, kredensial sesi WhatsApp, private key, `.git`, dan isi `node_modules` diblokir. Hasil baca yang disetujui dapat dikirim ke model AI untuk dirangkum.
+Godmode hanya berlaku pada chat tempat mode diaktifkan dan tidak disimpan setelah restart.
 
-### Godmode untuk pemilik
+## Perilaku agent
 
-Kirim `/godmode` dari chat pribadi nomor yang tercantum di `OWNER_NUMBERS` untuk mengaktifkan akses penuh selama 30 menit (atau nilai `AGENT_GODMODE_TTL_MINUTES`). Selama aktif, pemilik dapat meminta tindakan komputer dengan bahasa biasa, misalnya `Buka Chrome`, `Tutup Notepad`, `Lihat aplikasi yang berjalan`, atau `Kirim tangkapan layar komputer`. Agent dapat membuka aplikasi di luar `AGENT_ALLOWED_APPS`, menutup aplikasi, memilih jendela, membaca dan memindahkan kursor, mengklik, drag, scroll, mengetik teks, serta menekan pintasan keyboard termasuk tombol Windows. Tangkapan layar dikirim ke chat pemilik dan file sementaranya dibersihkan setelah terkirim. Untuk file, folder, pengaturan sistem, atau tindakan lain, agent dapat memakai PowerShell tanpa daftar izin; `AGENT_ALLOWED_PATHS` tidak membatasi perintah tersebut. Tindakan berjalan tanpa persetujuan tambahan dengan hak akses akun Windows yang menjalankan bot. Gunakan `/exec <perintah PowerShell>` jika ingin menjalankan perintah langsung. Keluaran perintah dibatasi ukurannya dan perintah yang terlalu lama dihentikan.
+### Intent dan kemampuan
 
-Kontrol mouse dan keyboard bekerja pada sesi desktop Windows tempat bot dijalankan. Agent membaca hasil setiap tool lalu melanjutkan sampai tugas selesai tanpa batas jumlah tindakan per pesan. Agent tetap menghentikan pengulangan tindakan yang sama ketika tidak menghasilkan kemajuan. Agent dapat memakai `inspect_desktop` untuk membaca screenshot sendiri dan memperoleh posisi teks dari OCR sebelum mengklik. Screenshot yang hanya diminta untuk dikirim tetap dikirim sebagai gambar. Agent juga dapat membaca gambar lokal dengan `read_image_file`. Bot mengirim gambar ke model lewat API; kemampuan analisis gambar bergantung pada dukungan model yang dipilih. OCR dipakai untuk posisi teks dan cadangan jika analisis visual gagal. OCR dapat memerlukan unduhan data bahasa pada pemakaian pertama; file cache disimpan di `agent-workspace/.ocr-cache`. Posisi OCR hanya perkiraan pusat kata, sehingga agent harus memeriksa ulang hasil setelah klik. Jendela yang terkunci, prompt UAC, atau aplikasi dengan hak lebih tinggi mungkin tidak dapat dikendalikan oleh proses bot.
+Pesan diklasifikasikan sebelum tool diberikan:
 
-Setelah input yang mengubah tampilan, bukti inspeksi sebelumnya dianggap kedaluwarsa. Agent harus membaca layar kembali sebelum menyatakan berhasil atau memakai koordinat berikutnya. Detail audit tersedia di `docs/desktop-input-audit.md`.
+- `Apakah kamu bisa membuka Chrome?` dijawab tanpa tindakan.
+- `Buka Chrome` diproses sebagai perintah.
 
-Pesan gambar WhatsApp juga diproses, termasuk gambar tanpa caption. Isi gambar dikirim ke model untuk dianalisis, tetapi data mentah gambar tidak disimpan di riwayat PostgreSQL. Ukurannya dibatasi oleh `AGENT_MAX_MEDIA_BYTES`. Pesan gambar dan screenshot hanya dianggap sebagai data, bukan sumber perintah baru untuk mengendalikan komputer.
+Setiap giliran menerima inventaris kemampuan aktual dan tool yang boleh dipanggil. Model tidak boleh menolak kemampuan yang tersedia atau mengaku dapat memakai tool yang tidak terpasang.
 
-Dalam godmode, agent dapat mencari lewat browser Edge, membaca judul dan URL hasil pencarian, membuka hasil, mengklik elemen bernama, dan mengisi kotak teks. Bila Google meminta verifikasi trafik otomatis, pencarian beralih ke Bing. Jika keduanya tidak dapat dibaca, agent melaporkan kegagalan pencarian. Browser agent memakai satu profil khusus yang persisten di `BROWSER_USER_DATA_DIR`, terpisah dari browser pribadi. Agent memakai browser dan tab aktif yang sama selama pekerjaan; tool tab baru hanya diberikan jika owner memang meminta tab atau halaman terpisah. Set `BROWSER_CHANNEL=chrome` untuk memakai Chrome atau `BROWSER_HEADLESS=true` agar jendelanya tidak tampak. Agent dapat mengerjakan file kode dengan PowerShell lalu membukanya di VS Code, atau mengendalikan jendela VS Code lewat tool desktop. Hasilnya tetap perlu diperiksa oleh pemilik untuk tugas yang kompleks.
+### Tugas bertahap
 
-Agent juga dapat mengisi formulir browser secara lengkap: textbox, dropdown, checkbox, upload file, dan tombol submit. Agent dapat membuka beberapa tab, berpindah tab, menutup tab, kembali, dan memuat ulang halaman. Setelah submit, halaman dibaca kembali untuk memeriksa hasil aktual. Upload file dan pengiriman formulir hanya dilakukan ketika diminta owner. Detail audit tersedia di `docs/browser-control-audit.md`.
+Dalam godmode, agent:
 
-Untuk membaca source web mentah, pemilik dapat meminta, misalnya, `Ambil source https://example.com lalu jelaskan data produk di dalamnya`. Dalam godmode, tool `web_fetch_source` mengambil HTML, JSON, atau teks tanpa cookie browser dan menyerahkan potongannya ke AI untuk diurai. AI dapat memakai `find` untuk mencari bagian tertentu dan `offset` untuk membaca bagian berikutnya. Satu bagian berisi maksimal 6.000 karakter; unduhan dibatasi 2 MiB. Source dari web diperlakukan sebagai data, bukan perintah. Jika isi halaman dibuat oleh JavaScript setelah halaman dimuat, agent dapat memakai `browser_open` dan `browser_inspect` untuk membaca tampilan akhirnya.
+1. Menentukan hasil akhir.
+2. Memilih tool relevan.
+3. Menyimpan hasil, kegagalan, artefak, dan bukti.
+4. Mencoba pendekatan berbeda setelah kegagalan.
+5. Menghindari tindakan identik tanpa kemajuan.
+6. Mengirim progres terbatas dan hasil akhir.
 
-Agent juga dapat menyelesaikan permintaan media bertahap, misalnya `Carikan gambar kucing oranye dan kirim ke saya`. Agent mencari kandidat gambar, memilih hasil beserta halaman sumbernya, memvalidasi file, lalu mengirimkannya sebagai gambar WhatsApp. File sementara dibersihkan setelah gambar berhasil diserahkan ke WhatsApp. Jika gambar yang dimaksud belum jelas dari pesan dan riwayat chat, agent akan meminta klarifikasi singkat. Gambar yang rusak, bukan format yang didukung, atau melebihi `AGENT_MAX_MEDIA_BYTES` tidak dikirim.
+Checkpoint disimpan di PostgreSQL. Pesan `lanjutkan` dapat memakai task aktif terakhir. Progres sukses dibatasi agar chat tidak penuh; kegagalan tetap dilaporkan langsung.
 
-Kandidat pencarian gambar disimpan pada checkpoint tugas sehingga instruksi lanjutan seperti `kirim yang kedua` tetap dapat memakai hasil sebelumnya. Jika model hanya memberikan tautan dan tidak menyiapkan media, agent mengoreksi langkah tersebut dan memakai kandidat tersimpan untuk menjalankan pengunduhan. Audit alur ini tersedia di `docs/image-delivery-audit.md`.
+### Desktop dan OCR
 
-Untuk pekerjaan yang membutuhkan beberapa langkah dalam godmode, bot mengirim pembaruan singkat seperti mulai bekerja, mencari sumber, membaca halaman, atau menyiapkan gambar. Satu tahap hanya dikirim sekali dan jumlah progres dibatasi agar chat tidak penuh. Pesan progres menunjukkan tindakan yang sedang dilakukan dan bukan bukti tugas sudah selesai. Hasil akhir tetap dikirim sebagai pesan terpisah setelah siap. Jika proses berhenti karena gangguan API, sumber tidak valid, kegagalan berulang, atau kegagalan kirim, balasan akhir menjelaskan progres terakhir dan hambatannya.
+`inspect_desktop` memakai OCR cepat untuk teks dan koordinat. Analisis visual detail digunakan untuk ikon atau elemen nonteks. Koordinat eksplisit menggunakan jalur cepat tanpa screenshot:
 
-Setiap tugas godmode mempunyai status terstruktur berisi tujuan, hasil yang diminta, kelompok tool, langkah yang sudah berhasil, kegagalan, dan bukti penyelesaian. Status aktif disimpan di PostgreSQL sehingga pesan `lanjutkan` dapat memakai checkpoint terakhir setelah proses dimulai ulang. Tool dipilih per kelompok tugas agar model tidak menerima fungsi yang tidak relevan. Agent meminta pemeriksaan tambahan sebelum menyatakan file, source web, media, atau keadaan aplikasi selesai. Jika bukti tidak dapat diperoleh, balasan menyebutkan bagian yang belum dapat dipastikan.
+```text
+gerakkan cursor ke 500,300
+klik di 500,300
+klik kanan di 500,300
+klik dua kali di 500,300
+```
 
-Untuk membatalkan pekerjaan yang sedang berjalan, kirim `/cancel`, `/batal`, `batal`, `batalkan tugas`, atau `stop tugas` dari chat pribadi owner. Perintah pembatalan diproses langsung tanpa menunggu antrean task. Tool yang sudah mulai diberi kesempatan menyelesaikan atau berhenti sesuai kemampuan tool tersebut, kemudian agent tidak menjalankan langkah berikutnya. Bot mengirim konfirmasi apakah task aktif ditemukan dan berhasil diberi sinyal pembatalan.
+Layar terkunci, Secure Desktop UAC, dan aplikasi dengan integrity level lebih tinggi dapat menolak input otomatis.
 
-Audit dan skenario evaluasi agent dijelaskan di `docs/agent-audit.md`. Jalankan `npm run eval:agent` untuk memeriksa routing tool dan bukti minimum pada skenario standar.
+### Browser
 
-Server MCP jaringan dapat ditambahkan lewat `MCP_SERVERS_JSON` di `.env` sebagai daftar objek `name`, `url`, dan `headers` opsional. Contoh format ada di `.env.example`. Hanya endpoint HTTPS atau HTTP localhost yang diterima. Ketika godmode aktif, agent dapat melihat status server, memanggil tool yang diumumkan server, serta membaca resource dan prompt. Agar pemilihan tool tetap fokus, model langsung melihat maksimal delapan tool MCP yang relevan; tool lain dapat ditemukan lewat daftar tool server. Tidak ada pencarian otomatis untuk semua server MCP di internet; hanya server yang pemilik daftarkan yang dapat diakses. Kredensial MCP disimpan di `.env`, dan akses MCP tidak diberikan kepada nomor selain pemilik.
+Browser memakai satu profil persisten dan mempertahankan halaman aktif. Agent dapat mencari web, membaca DOM, mengelola tab, mengisi field, memilih dropdown, mengatur checkbox, mengunggah file, dan submit formulir. Form hanya dikirim ketika tujuan owner memerlukannya.
 
-Gunakan `/godmode status` untuk memeriksa sisa waktu dan `/godmode off` untuk mematikan. Mode hanya berlaku untuk chat pribadi tempat diaktifkan, tidak tersimpan setelah bot restart, dan setiap tindakan dicatat di audit. Di luar mode ini, batasan folder, daftar perintah CMD, dan persetujuan WhatsApp tetap berlaku.
+Source HTML, JSON, atau teks dapat diambil tanpa cookie browser. Konten eksternal diperlakukan sebagai data, bukan instruksi.
 
-Bot juga dapat memilih balasan berbentuk tombol, daftar, dan polling. Jika format interaktif gagal dikirim, bot memakai fallback teks.
+### Pesan dan media
 
-## Jika QR tidak muncul
+- Hanya chat pribadi berbentuk teks atau gambar yang diproses.
+- Grup, status, media lain, dan pesan bot sendiri diabaikan.
+- Gambar mentah tidak disimpan pada riwayat PostgreSQL.
+- ID pesan unik mencegah balasan ganda.
+- Balasan yang sudah disiapkan tetap tersimpan bila pengiriman gagal.
 
-1. Pastikan terminal menampilkan sumber `whatsapp-web` saat memilih versi protokol. Jika gagal, periksa akses ke `web.whatsapp.com` dan jalankan `npm install` untuk memastikan dependency memakai rilis terbaru.
-2. Untuk status 405, pastikan versi Baileys dan protokol sudah terbaru serta jaringan mengizinkan akses ke WhatsApp Web.
-3. Untuk timeout atau status 500, periksa koneksi internet, proxy, firewall, dan waktu sistem Windows.
-4. Jika log menyatakan sesi tidak valid, hentikan bot dan simpan sesi lama sebagai cadangan sebelum login ulang:
+## Data dan keamanan
+
+| Lokasi | Isi | Perlakuan |
+| --- | --- | --- |
+| `.env` | Konfigurasi dan header MCP | Jangan commit. |
+| `apikey.txt` | Secret key AI | Jangan commit. |
+| `auth_info_baileys/` | Sesi WhatsApp | Jangan commit atau bagikan. |
+| `agent-workspace/browser-profile/` | Cookie dan sesi browser | Simpan secara privat. |
+| PostgreSQL | Pesan, reply, audit, dan checkpoint | Atur backup dan retensi. |
+
+Log menyaring field sensitif dan memakai `messageTag` untuk menghubungkan tahap pemrosesan tanpa menampilkan nomor atau isi pesan.
+
+## Pengembangan
+
+```bash
+npm test
+npm run check
+npm run eval:agent
+```
+
+Pengujian berada pada folder `test/`. Perubahan pada alur pesan, intent, tool, atau task state sebaiknya menyertakan pengujian perilaku yang relevan.
+
+## Troubleshooting
+
+### Database tidak ditemukan
+
+Buat database yang sama dengan nama pada `DATABASE_URL`, kemudian jalankan ulang bot.
+
+### QR tidak muncul
+
+1. Periksa akses jaringan ke WhatsApp Web.
+2. Pastikan dependency sesuai `package-lock.json`.
+3. Pastikan folder sesi tidak berisi sesi aktif lain.
+4. Untuk login ulang sambil menyimpan cadangan:
 
    ```powershell
    Rename-Item auth_info_baileys auth_info_baileys-backup
    npm start
    ```
 
-Bot membatasi percobaan koneksi ulang agar terminal tidak terus mengulang kegagalan yang sama. Setelah masalah diperbaiki, jalankan kembali `npm start`.
+Status 515 setelah pairing adalah permintaan restart socket dan ditangani otomatis. Init queries tambahan dinonaktifkan karena tidak digunakan dan dapat menghasilkan timeout 408 nonfatal.
 
-## Jika bot terhubung tetapi tidak membalas
+### Terhubung tetapi tidak membalas
 
-1. Tunggu log `WhatsApp terhubung`, lalu kirim pesan teks `Halo` dari akun WhatsApp lain ke nomor bot. Pesan grup, status, dan pesan dari akun bot sendiri tidak diproses.
-2. Cari log `Event pesan WhatsApp diterima`, `Pesan pribadi diterima`, `Memproses pesan dengan agent`, `Balasan tersimpan untuk dikirim`, dan `Balasan diserahkan ke WhatsApp`. Semua tahap pemrosesan memakai `messageTag` yang sama tanpa menampilkan isi pesan atau nomor pengirim.
-3. Jika tidak ada `Event pesan WhatsApp diterima` sesudah pesan baru dikirim, berarti Baileys belum menerbitkan event untuk bot; periksa apakah ada `Notifikasi tertunda WhatsApp selesai diterima`, koneksi, dan perangkat tertaut. Jika event ada tetapi tidak ada `Pesan pribadi diterima`, set `LOG_LEVEL=debug` di `.env` dan ulangi pesan baru. Alasan pengabaian seperti `old_append`, `from_me`, dan `unsupported_content` akan terlihat.
-4. Jika muncul `Secret key AI ditolak (401)`, pastikan baris pertama `apikey.txt` benar, lalu jalankan ulang bot. Jika muncul status 400 atau 403, cek ID model dan akses model pada penyedia API. Bot tetap mencoba mengirim pemberitahuan gangguan kepada pengirim.
-5. Jika tahap pengiriman gagal, balasan yang sudah disiapkan disimpan dan dicoba lagi dengan ID WhatsApp yang sama. Gangguan koneksi yang masih berlangsung dapat menunda pengiriman sampai bot terhubung kembali.
+Cari urutan log dengan `messageTag` yang sama:
 
-Jika log menunjukkan `stubReason: message_absent`, WhatsApp hanya mengirim placeholder `unavailable` tanpa teks pesan. Baileys meminta kirim ulang dari perangkat utama. Bila teks tetap tidak datang setelah 25 detik, bot meminta pengirim mengirim ulang. Periksa apakah perangkat utama terhubung dan apakah pesan yang sama terbaca di WhatsApp Web resmi; bot tidak dapat menjawab isi pesan yang belum dikirim WhatsApp.
-
-Status 515 sesaat setelah pairing pertama adalah permintaan restart socket dari WhatsApp. Timeout 408 pada *init queries* Baileys terjadi ketika kueri sinkronisasi awal tidak mendapat jawaban tepat waktu dan tidak otomatis berarti alur pesan gagal. Bot mencatat kondisi ini sebagai peringatan nonfatal dan tetap memantau socket. Jika sesudahnya tidak ada `Event pesan WhatsApp diterima` saat pesan baru dikirim, koneksi mungkin terlihat aktif tetapi tidak menerima event; tunggu event penutupan agar mekanisme koneksi ulang berjalan atau jalankan ulang bot bila socket tidak pernah berubah.
-
-Perintah cursor dengan koordinat lengkap, misalnya `gerakkan cursor ke 500,300`, `klik di 500,300`, atau `klik kanan di 500,300`, memakai jalur cepat saat godmode aktif. Perintah tersebut tidak memerlukan screenshot karena targetnya sudah pasti. Log `Agent selesai memproses pesan` menyertakan `durationMs` untuk membantu menemukan tugas yang lambat.
-
-## Perilaku versi awal
-
-- Chat pribadi berbentuk teks atau gambar diproses.
-- Pesan grup, status, media selain gambar, dan pesan dari akun bot sendiri diabaikan.
-- ID pesan disimpan secara unik sehingga event yang diterima ulang tidak menghasilkan balasan ganda.
-- Gangguan pada layanan AI atau database ditangani per pesan dan tidak menghentikan bot.
-
-## Pemeriksaan
-
-```bash
-npm test
-npm run check
+```text
+Pesan pribadi diterima
+Membaca riwayat percakapan
+Memproses pesan dengan agent
+Agent selesai memproses pesan
+Balasan tersimpan untuk dikirim
+Balasan diserahkan ke WhatsApp
 ```
+
+Gunakan `LOG_LEVEL=debug` bila event tidak mencapai tahap pertama. `reason: from_me` berarti event berasal dari pesan bot dan sengaja diabaikan.
+
+### API AI gagal
+
+- `401`: periksa secret key pada baris pertama `apikey.txt`.
+- `403`: periksa akses akun dan model pada penyedia.
+- Timeout: periksa jaringan, `AI_TIMEOUT_MS`, dan kesehatan penyedia.
+- Model tidak ditemukan: cocokkan `AI_MODEL` dengan endpoint `/models`.
+
+Restart aplikasi setelah mengubah key, base URL, atau model.
+
+### OCR pertama lambat
+
+Tesseract.js menyiapkan worker dan cache bahasa pada pemakaian awal. Bot melakukan warmup setelah startup. Cache disimpan di `agent-workspace/.ocr-cache`.
+
+## Dokumentasi lanjutan
+
+| Dokumen | Topik |
+| --- | --- |
+| [DOCS.md](./DOCS.md) | Referensi Baileys dalam repository. |
+| [Agent audit](./docs/agent-audit.md) | Routing, task state, dan evaluasi. |
+| [Capability awareness](./docs/capability-awareness.md) | Inventaris kemampuan. |
+| [Intent and recovery](./docs/intent-and-recovery-audit.md) | Klasifikasi dan retry. |
+| [Desktop input](./docs/desktop-input-audit.md) | Mouse, keyboard, dan verifikasi. |
+| [Desktop response time](./docs/desktop-response-time-audit.md) | Jalur cepat desktop. |
+| [OCR performance](./docs/ocr-performance.md) | OCR cepat dan analisis detail. |
+| [Browser control](./docs/browser-control-audit.md) | Browser dan formulir. |
+| [Image delivery](./docs/image-delivery-audit.md) | Pencarian dan pengiriman gambar. |
+| [Repeated response](./docs/repeated-response-audit.md) | Deduplikasi dan progres. |
+| [Baileys init queries](./docs/baileys-init-query-audit.md) | Timeout sinkronisasi awal. |
+| [Conversation style](./docs/conversation-style.md) | Gaya komunikasi. |
+
+## Lisensi
+
+Proyek menggunakan lisensi ISC sebagaimana tercantum pada `package.json`.
