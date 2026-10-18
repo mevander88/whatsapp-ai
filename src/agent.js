@@ -57,6 +57,10 @@ Balasan akhir harus menyebutkan hasil yang benar-benar diperoleh. Jangan tampilk
 
 const QUESTION_ONLY_PROMPT = `Pesan terakhir adalah pertanyaan, bukan perintah untuk bertindak. Jawab pertanyaannya tanpa menjalankan tool komputer, browser, kamera, file, atau MCP. Jangan mengubah keadaan komputer. Jika jawaban memerlukan pemeriksaan komputer, jelaskan singkat bahwa owner perlu memberikan perintah eksplisit untuk melakukan pemeriksaan tersebut.`
 
+function toolNames(definitions = []) {
+  return [...new Set(definitions.map((tool) => tool?.function?.name).filter(Boolean))]
+}
+
 function parseDecision(text) {
   const value = String(text || '').trim()
   if (value.startsWith(APPROVE_PREFIX)) return { decision: 'approved', token: value.slice(APPROVE_PREFIX.length) }
@@ -266,13 +270,32 @@ function createAgent({ ai, database, computerTools, responseTools, imageReader, 
     return afterTool || !requestsAgentAction(requestText) ? responseTools.definitions : []
   }
 
-  async function decide({ history, isOwner, godmode = false, requestText = '', task, allowComputerActions = true }) {
+  function capabilityPrompt({ isOwner, godmode, executableTools = [] }) {
+    if (!isOwner) return 'Kemampuan untuk chat ini: menjawab pertanyaan umum dan membuat format pesan WhatsApp.'
+    const known = [
+      ...computerTools.definitions,
+      ...(godmode ? computerTools.godmodeDefinitions || [] : []),
+      ...(godmode ? browserTools?.definitions || [] : [])
+    ]
+    const knownNames = toolNames(known)
+    const executableNames = toolNames(executableTools)
+    return `Inventaris kemampuan internal (${godmode ? 'godmode aktif' : 'mode persetujuan'}): ${knownNames.join(', ') || 'tidak ada tool komputer'}.
+Tool yang dapat dipanggil pada giliran ini: ${executableNames.join(', ') || 'tidak ada; jawab tanpa bertindak'}.
+Sebelum menjawab, cocokkan permintaan dengan inventaris ini. Jangan bilang tidak bisa jika kemampuan yang sesuai tercantum. Jangan mengaku sudah melakukan tindakan tanpa hasil tool. Jika ini pertanyaan kemampuan, jelaskan kemampuan berdasarkan inventaris tanpa menjalankannya. Jika sebuah cara gagal, periksa inventaris lagi dan pilih kemampuan relevan lain sebelum menyimpulkan gagal. Nama tool hanya konteks internal dan jangan disebutkan kepada pengguna.`
+  }
+
+  async function decide({ history, isOwner, godmode = false, capabilityGodmode = godmode, requestText = '', task, allowComputerActions = true }) {
+    const executableTools = [
+      ...availableResponseDefinitions(godmode && allowComputerActions, requestText),
+      ...(isOwner && allowComputerActions ? await availableComputerDefinitions(godmode, requestText, task) : [])
+    ]
+    const capabilities = capabilityPrompt({ isOwner, godmode: capabilityGodmode, executableTools })
     const prompt = allowComputerActions
-      ? (godmode ? `${GODMODE_PROMPT}\n\n${TASK_PROTOCOL}\n\n${NATURAL_STYLE_PROMPT}\n\nStatus tugas: ${taskContext(task)}` : isOwner ? `${OWNER_PROMPT}\n\n${AGENT_EXAMPLES}\n\n${NATURAL_STYLE_PROMPT}` : `${PUBLIC_PROMPT}\n\n${NATURAL_STYLE_PROMPT}`)
-      : `${isOwner ? OWNER_PROMPT : PUBLIC_PROMPT}\n\n${QUESTION_ONLY_PROMPT}\n\n${NATURAL_STYLE_PROMPT}`
+      ? (godmode ? `${GODMODE_PROMPT}\n\n${TASK_PROTOCOL}\n\n${NATURAL_STYLE_PROMPT}\n\n${capabilities}\n\nStatus tugas: ${taskContext(task)}` : isOwner ? `${OWNER_PROMPT}\n\n${AGENT_EXAMPLES}\n\n${NATURAL_STYLE_PROMPT}\n\n${capabilities}` : `${PUBLIC_PROMPT}\n\n${NATURAL_STYLE_PROMPT}\n\n${capabilities}`)
+      : `${isOwner ? OWNER_PROMPT : PUBLIC_PROMPT}\n\n${QUESTION_ONLY_PROMPT}\n\n${NATURAL_STYLE_PROMPT}\n\n${capabilities}`
     return ai.chat(history, {
       systemPrompt: prompt,
-      tools: [...availableResponseDefinitions(godmode && allowComputerActions, requestText), ...(isOwner && allowComputerActions ? await availableComputerDefinitions(godmode, requestText, task) : [])]
+      tools: executableTools
     })
   }
 
@@ -335,9 +358,10 @@ function createAgent({ ai, database, computerTools, responseTools, imageReader, 
   }
 
   async function retryComputerAction(history, godmode = false, task) {
+    const tools = await availableComputerDefinitions(godmode, String(history.at(-1)?.content || ''), task)
     const completion = await ai.chat(history, {
-      systemPrompt: `${godmode ? `${GODMODE_PROMPT}\n\n${TASK_PROTOCOL}\n\nStatus tugas: ${taskContext(task)}` : OWNER_PROMPT}\n\n${NATURAL_STYLE_PROMPT}\n\nPermintaan ini meminta tindakan komputer, browser, atau MCP. Pilih tool yang sesuai untuk memulai pekerjaan. Jika tidak ada tool yang sesuai, jelaskan keterbatasannya tanpa meminta izin di komputer.`,
-      tools: await availableComputerDefinitions(godmode, String(history.at(-1)?.content || ''), task)
+      systemPrompt: `${godmode ? `${GODMODE_PROMPT}\n\n${TASK_PROTOCOL}\n\nStatus tugas: ${taskContext(task)}` : OWNER_PROMPT}\n\n${NATURAL_STYLE_PROMPT}\n\n${capabilityPrompt({ isOwner: true, godmode, executableTools: tools })}\n\nPermintaan ini meminta tindakan komputer, browser, atau MCP. Pilih tool yang sesuai untuk memulai pekerjaan. Jika tidak ada tool yang sesuai, jelaskan keterbatasannya tanpa meminta izin di komputer.`,
+      tools
     })
     return completion.toolCall && (godmode ? hasGodmodeTool(completion.toolCall.name) : computerTools.has(completion.toolCall.name)) ? completion : null
   }
@@ -410,6 +434,7 @@ function createAgent({ ai, database, computerTools, responseTools, imageReader, 
     }
 
     const tools = [...availableResponseDefinitions(true, requestText, true), ...await availableComputerDefinitions(true, requestText, task)]
+    const capabilities = capabilityPrompt({ isOwner: true, godmode: true, executableTools: tools })
     const conversation = [...history]
     const executed = new Set((task.actions || [])
       .filter((action) => action.ok && !REPEATABLE_READ_TOOLS.has(action.tool))
@@ -519,7 +544,7 @@ function createAgent({ ai, database, computerTools, responseTools, imageReader, 
       let next
       try {
         if (signal?.aborted) return { type: 'text', text: CANCELLED_REPLY }
-        next = await ai.chat(conversation, { systemPrompt: `${GODMODE_PROMPT}\n\n${TASK_PROTOCOL}\n\n${NATURAL_STYLE_PROMPT}\n\nStatus tugas: ${taskContext(task)}`, tools })
+        next = await ai.chat(conversation, { systemPrompt: `${GODMODE_PROMPT}\n\n${TASK_PROTOCOL}\n\n${NATURAL_STYLE_PROMPT}\n\n${capabilities}\n\nStatus tugas: ${taskContext(task)}`, tools })
         if (signal?.aborted) return { type: 'text', text: CANCELLED_REPLY }
       } catch (error) {
         return { type: 'text', text: `Langkah yang berhasil: ${completed.join(', ') || 'belum ada'}. Hasil terakhir: ${lastResult.slice(0, 1_000)}. Model AI gagal melanjutkan: ${redactSecrets(error.message)}` }
@@ -530,7 +555,7 @@ function createAgent({ ai, database, computerTools, responseTools, imageReader, 
           conversation.push({ role: 'assistant', content: next.text || 'Pendekatan terakhir gagal.' })
           conversation.push({ role: 'user', content: 'Pendekatan terakhir gagal. Coba pendekatan berbeda dengan tool atau input lain. Jika semua cara relevan sudah dicoba, jelaskan hambatan akhirnya secara spesifik.' })
           try {
-            next = await ai.chat(conversation, { systemPrompt: `${GODMODE_PROMPT}\n\n${TASK_PROTOCOL}\n\n${NATURAL_STYLE_PROMPT}\n\nStatus tugas: ${taskContext(task)}`, tools })
+            next = await ai.chat(conversation, { systemPrompt: `${GODMODE_PROMPT}\n\n${TASK_PROTOCOL}\n\n${NATURAL_STYLE_PROMPT}\n\n${capabilities}\n\nStatus tugas: ${taskContext(task)}`, tools })
             pending = next.toolCalls?.length ? next.toolCalls : next.toolCall ? [next.toolCall] : []
             if (pending.length) continue actionLoop
           } catch {
@@ -550,7 +575,7 @@ function createAgent({ ai, database, computerTools, responseTools, imageReader, 
               : 'Gunakan tool yang tersedia untuk memeriksa hasil, atau jelaskan hambatan nyata jika verifikasi tidak mungkin.'
             conversation.push({ role: 'user', content: `Pemeriksaan internal: hasil akhir belum memiliki bukti ${missing.join(', ')}. ${imageInstruction}` })
             try {
-              next = await ai.chat(conversation, { systemPrompt: `${GODMODE_PROMPT}\n\n${TASK_PROTOCOL}\n\n${NATURAL_STYLE_PROMPT}\n\nStatus tugas: ${taskContext(task)}`, tools })
+              next = await ai.chat(conversation, { systemPrompt: `${GODMODE_PROMPT}\n\n${TASK_PROTOCOL}\n\n${NATURAL_STYLE_PROMPT}\n\n${capabilities}\n\nStatus tugas: ${taskContext(task)}`, tools })
               pending = next.toolCalls?.length ? next.toolCalls : next.toolCall ? [next.toolCall] : []
               if (pending.length) continue actionLoop
             } catch {
@@ -763,7 +788,7 @@ function createAgent({ ai, database, computerTools, responseTools, imageReader, 
         : requestComputerApproval({ chatId, requesterId, name: directAction.name, args: directAction.arguments })
     }
 
-    const completion = await decide({ history: decisionHistory, isOwner: Boolean(requesterId), godmode: godmode && shouldExecute, requestText: text, task, allowComputerActions: shouldExecute })
+    const completion = await decide({ history: decisionHistory, isOwner: Boolean(requesterId), godmode: godmode && shouldExecute, capabilityGodmode: godmode, requestText: text, task, allowComputerActions: shouldExecute })
     if (shouldExecute && requesterId && !completion.toolCall && ((requestsComputerAction(text) && defersPermission(completion.text)) || requestsAgentAction(text))) {
       const retry = await retryComputerAction(decisionHistory, godmode, task)
       const toolCall = retry?.toolCall

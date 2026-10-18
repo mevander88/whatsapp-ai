@@ -94,6 +94,9 @@ test('pertanyaan tidak menerima tool komputer walaupun godmode aktif', async () 
   assert.match(calls.aiOptions[0].systemPrompt, /pertanyaan, bukan perintah/i)
   assert.match(calls.aiOptions[0].systemPrompt, /santai, natural, singkat/i)
   assert.match(calls.aiOptions[0].systemPrompt, /Jangan menyebut diri sebagai agent/i)
+  assert.match(calls.aiOptions[0].systemPrompt, /Inventaris kemampuan internal \(godmode aktif\)/i)
+  assert.match(calls.aiOptions[0].systemPrompt, /launch_application/)
+  assert.match(calls.aiOptions[0].systemPrompt, /Tool yang dapat dipanggil pada giliran ini: send_buttons/i)
 })
 
 test('tool call dari model diabaikan jika pesan hanya pertanyaan', async () => {
