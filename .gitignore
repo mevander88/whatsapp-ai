@@ -6,3 +6,4 @@ agent-workspace/*
 !agent-workspace/.gitkeep
 *.log
 apikey.txt
+issue.md
