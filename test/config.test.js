@@ -1,21 +1,45 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { loadConfig, positiveInteger, whatsappVersion } = require('../src/config')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const { loadConfig, positiveInteger, readAICredentials, whatsappVersion } = require('../src/config')
 
-test('loadConfig menolak konfigurasi wajib yang kosong', () => {
-  assert.throws(() => loadConfig({}), /HF_TOKEN \(atau DEEPSEEK_API_KEY\), DATABASE_URL/)
+const credentialContents = [
+  'secret-test-value',
+  '',
+  'Endpoint: https://api.rindri.com/',
+  'Cara pakai: OpenAI-compatible: base URL https://api.rindri.com/v1 + header Authorization: Bearer <Secret Key>.'
+].join('\n')
+
+function withCredentials(contents, run) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-ai-config-'))
+  const file = path.join(directory, 'apikey.txt')
+  fs.writeFileSync(file, contents)
+  try {
+    return run(file)
+  } finally {
+    fs.unlinkSync(file)
+    fs.rmdirSync(directory)
+  }
+}
+
+test('loadConfig menolak DATABASE_URL yang kosong', () => {
+  assert.throws(() => loadConfig({}), /DATABASE_URL/)
 })
 
-test('loadConfig membaca konfigurasi wajib dan nilai bawaan', () => {
+test('loadConfig membaca secret key dan base URL dari apikey.txt', () => withCredentials(credentialContents, (file) => {
   const config = loadConfig({
-    HF_TOKEN: 'token-test',
+    AI_KEY_FILE: file,
+    HF_TOKEN: 'token-lama',
+    AI_BASE_URL: 'https://api.howtofix.id/v1',
     DATABASE_URL: 'postgresql://localhost/test'
   })
 
-  assert.equal(config.aiApiKey, 'token-test')
+  assert.equal(config.aiApiKey, 'secret-test-value')
   assert.equal(config.historyLimit, 10)
   assert.equal(config.aiModel, 'deepseek-v4.1-flash')
-  assert.equal(config.aiBaseUrl, 'https://api.howtofix.id/v1')
+  assert.equal(config.aiBaseUrl, 'https://api.rindri.com/v1')
   assert.deepEqual(config.ownerIds, [])
   assert.equal(config.approvalTtlMinutes, 10)
   assert.equal(config.godmodeTtlMinutes, 30)
@@ -24,11 +48,12 @@ test('loadConfig membaca konfigurasi wajib dan nilai bawaan', () => {
   assert.deepEqual(config.allowedCmdCommands, ['ver', 'whoami', 'hostname', 'ipconfig', 'tasklist', 'systeminfo'])
   assert.equal(config.cameraDeviceName, '')
   assert.equal(config.cameraFfmpegPath, 'ffmpeg')
-})
+  assert.equal(config.browserUserDataDir, path.resolve('agent-workspace/browser-profile'))
+}))
 
-test('loadConfig menormalkan nomor pemilik dan daftar izin', () => {
+test('loadConfig menormalkan nomor pemilik dan daftar izin', () => withCredentials(credentialContents, (file) => {
   const config = loadConfig({
-    DEEPSEEK_API_KEY: 'token-test',
+    AI_KEY_FILE: file,
     DATABASE_URL: 'postgresql://localhost/test',
     OWNER_NUMBERS: '+628123, 628456@s.whatsapp.net',
     AGENT_ALLOWED_APPS: 'notepad, calculator',
@@ -40,40 +65,38 @@ test('loadConfig menormalkan nomor pemilik dan daftar izin', () => {
   assert.deepEqual(config.allowedApps, ['notepad', 'calculator'])
   assert.deepEqual(config.allowedCmdCommands, ['systeminfo', 'ver'])
   assert.equal(config.godmodeTtlMinutes, 5)
-})
+}))
 
-test('loadConfig menerima nama token lama dan mengutamakan HF_TOKEN', () => {
-  const oldConfig = loadConfig({ DEEPSEEK_API_KEY: 'token-lama', DATABASE_URL: 'postgresql://localhost/test' })
-  assert.equal(oldConfig.aiApiKey, 'token-lama')
-
-  const newConfig = loadConfig({ HF_TOKEN: 'token-baru', DEEPSEEK_API_KEY: 'token-lama', DATABASE_URL: 'postgresql://localhost/test' })
-  assert.equal(newConfig.aiApiKey, 'token-baru')
-
-  const blankConfig = loadConfig({ HF_TOKEN: '   ', DEEPSEEK_API_KEY: 'token-lama', DATABASE_URL: 'postgresql://localhost/test' })
-  assert.equal(blankConfig.aiApiKey, 'token-lama')
-})
-
-test('AI_MODEL dan AI_BASE_URL mengutamakan konfigurasi baru tanpa memutus nama lama', () => {
-  const oldConfig = loadConfig({
-    HF_TOKEN: 'token', DATABASE_URL: 'postgresql://localhost/test',
-    DEEPSEEK_MODEL: 'model-lama', DEEPSEEK_API_URL: 'https://old.example/chat'
+test('AI_MODEL dalam .env tetap dapat memilih model', () => withCredentials(credentialContents, (file) => {
+  const config = loadConfig({
+    AI_KEY_FILE: file,
+    DATABASE_URL: 'postgresql://localhost/test',
+    AI_MODEL: 'deepseek-v4-pro',
+    DEEPSEEK_MODEL: 'model-lama'
   })
-  assert.equal(oldConfig.aiModel, 'model-lama')
-  assert.equal(oldConfig.aiBaseUrl, 'https://old.example/chat')
+  assert.equal(config.aiModel, 'deepseek-v4-pro')
+  assert.equal(config.aiBaseUrl, 'https://api.rindri.com/v1')
+}))
 
-  const newConfig = loadConfig({
-    HF_TOKEN: 'token', DATABASE_URL: 'postgresql://localhost/test',
-    AI_MODEL: 'gemini-3-flash-preview', AI_BASE_URL: 'https://new.example/v1',
-    DEEPSEEK_MODEL: 'model-lama', DEEPSEEK_API_URL: 'https://old.example/chat'
+test('file kredensial hilang atau tidak valid menghasilkan pesan tanpa secret key', () => {
+  const missing = path.join(os.tmpdir(), `wa-ai-missing-${process.pid}-${Date.now()}.txt`)
+  assert.throws(() => readAICredentials(missing), /File kredensial AI tidak ditemukan/)
+  withCredentials('secret-test-value\nEndpoint: https://api.rindri.com/', (file) => {
+    assert.throws(() => readAICredentials(file), (error) => {
+      assert.match(error.message, /base URL OpenAI-compatible/)
+      assert.equal(error.message.includes('secret-test-value'), false)
+      return true
+    })
   })
-  assert.equal(newConfig.aiModel, 'gemini-3-flash-preview')
-  assert.equal(newConfig.aiBaseUrl, 'https://new.example/v1')
+  withCredentials('secret-test-value\nbase URL http://example.test/v1', (file) => {
+    assert.throws(() => readAICredentials(file), /HTTPS/)
+  })
 })
 
-test('positiveInteger menolak nilai yang tidak valid', () => {
+test('positiveInteger menolak nilai yang tidak valid', () => withCredentials(credentialContents, (file) => {
   assert.throws(() => positiveInteger('0', 10, 'LIMIT'), /bilangan bulat positif/)
-  assert.throws(() => loadConfig({ HF_TOKEN: 'test', DATABASE_URL: 'postgresql://localhost/test', AGENT_GODMODE_TTL_MINUTES: '0' }), /AGENT_GODMODE_TTL_MINUTES/)
-})
+  assert.throws(() => loadConfig({ AI_KEY_FILE: file, DATABASE_URL: 'postgresql://localhost/test', AGENT_GODMODE_TTL_MINUTES: '0' }), /AGENT_GODMODE_TTL_MINUTES/)
+}))
 
 test('whatsappVersion membaca override tiga angka', () => {
   assert.deepEqual(whatsappVersion('2, 3000, 123'), [2, 3000, 123])

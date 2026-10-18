@@ -29,6 +29,23 @@ test('OCR memberi teks dan posisi kata saat model visual gagal', async () => {
   await reader.close()
 })
 
+test('mode OCR cepat tidak menunggu model visual', async () => {
+  let visionCalls = 0
+  const reader = createImageReader({
+    ai: { chat: async () => { visionCalls += 1; return { text: 'vision' } } },
+    createWorkerImpl: async () => ({
+      recognize: async () => ({ data: { text: 'Simpan', blocks: [] } }),
+      terminate: async () => {}
+    })
+  })
+
+  const result = await reader.analyze(png, { ocrOnly: true, includeCoordinates: true })
+  assert.equal(result.method, 'ocr')
+  assert.match(result.description, /Simpan/)
+  assert.equal(visionCalls, 0)
+  await reader.close()
+})
+
 test('format selain gambar yang didukung ditolak sebelum dikirim ke model', () => {
   assert.throws(() => imageMime(Buffer.from('not an image')), /Format gambar/)
 })

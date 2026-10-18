@@ -19,6 +19,7 @@ test('path policy membatasi akses ke root dan memblokir rahasia', () => {
   assert.equal(policy.resolveAllowedPath('notes/info.txt'), path.join(root, 'notes', 'info.txt'))
   assert.throws(() => policy.resolveAllowedPath('../.env'), /di luar folder/)
   assert.throws(() => policy.resolveAllowedPath('.env.local'), /sensitif/)
+  assert.throws(() => policy.resolveAllowedPath('apikey.txt'), /sensitif/)
   assert.throws(() => policy.resolveAllowedPath('private.pem'), /sensitif/)
 })
 

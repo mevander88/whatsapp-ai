@@ -57,6 +57,23 @@ function createDatabase(connectionString) {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `)
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS agent_tasks (
+        task_id UUID PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        requester_id TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        state JSONB NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'completed', 'blocked')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `)
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS agent_tasks_conversation_updated_idx
+      ON agent_tasks (conversation_id, updated_at DESC)
+    `)
   }
 
   async function saveIncomingMessage({ conversationId, messageId, content }) {
@@ -241,6 +258,28 @@ function createDatabase(connectionString) {
     )
   }
 
+  async function saveAgentTask({ conversationId, requesterId, task }) {
+    await pool.query(
+      `INSERT INTO agent_tasks (task_id, conversation_id, requester_id, goal, state, status)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+       ON CONFLICT (task_id) DO UPDATE
+       SET state = EXCLUDED.state, status = EXCLUDED.status, updated_at = NOW()`,
+      [task.id, conversationId, requesterId, task.goal, JSON.stringify(task), task.status]
+    )
+  }
+
+  async function getActiveAgentTask({ conversationId, requesterId }) {
+    const result = await pool.query(
+      `SELECT state
+       FROM agent_tasks
+       WHERE conversation_id = $1 AND requester_id = $2 AND status = 'active'
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [conversationId, requesterId]
+    )
+    return result.rows[0]?.state || null
+  }
+
   return {
     initialize,
     saveIncomingMessage,
@@ -254,6 +293,8 @@ function createDatabase(connectionString) {
     createPendingAction,
     resolvePendingAction,
     saveAuditLog,
+    saveAgentTask,
+    getActiveAgentTask,
     close: () => pool.end()
   }
 }

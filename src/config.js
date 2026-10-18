@@ -1,4 +1,5 @@
 const path = require('node:path')
+const fs = require('node:fs')
 const dotenv = require('dotenv')
 const { parseMcpServers } = require('./mcp-tools')
 
@@ -32,22 +33,52 @@ function whatsappVersion(value) {
   return version
 }
 
+function readAICredentials(filePath) {
+  let contents
+  try {
+    contents = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '')
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error(`File kredensial AI tidak ditemukan: ${filePath}. Buat apikey.txt di folder proyek.`)
+    }
+    throw new Error(`File kredensial AI tidak dapat dibaca (${error.code || 'kesalahan tidak diketahui'}).`)
+  }
+
+  const apiKey = contents.split(/\r?\n/).find((line) => line.trim())?.trim()
+  if (!apiKey || /\s/.test(apiKey) || apiKey.startsWith('#')) {
+    throw new Error('Baris pertama apikey.txt harus berisi secret key API.')
+  }
+
+  const baseUrlText = contents.match(/\bbase\s+url\s*[:=]?\s*(https?:\/\/[^\s<>]+)/i)?.[1]
+  if (!baseUrlText) {
+    throw new Error('apikey.txt harus mencantumkan base URL OpenAI-compatible.')
+  }
+
+  let url
+  try {
+    url = new URL(baseUrlText)
+  } catch {
+    throw new Error('Base URL dalam apikey.txt tidak valid.')
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+    throw new Error('Base URL dalam apikey.txt harus berupa HTTPS tanpa kredensial atau query.')
+  }
+
+  return { apiKey, baseUrl: url.toString().replace(/\/$/, '') }
+}
+
 function loadConfig(environment = process.env) {
   dotenv.config({ quiet: true })
 
   const env = environment === process.env ? process.env : environment
-  const missing = []
-  if (!env.HF_TOKEN?.trim() && !env.DEEPSEEK_API_KEY?.trim()) missing.push('HF_TOKEN (atau DEEPSEEK_API_KEY)')
-  if (!env.DATABASE_URL?.trim()) missing.push('DATABASE_URL')
-
-  if (missing.length > 0) {
-    throw new Error(`Konfigurasi wajib belum tersedia: ${missing.join(', ')}`)
-  }
+  if (!env.DATABASE_URL?.trim()) throw new Error('Konfigurasi wajib belum tersedia: DATABASE_URL')
+  const credentialsPath = path.resolve(env.AI_KEY_FILE?.trim() || path.join(__dirname, '..', 'apikey.txt'))
+  const credentials = readAICredentials(credentialsPath)
 
   return {
-    aiApiKey: env.HF_TOKEN?.trim() || env.DEEPSEEK_API_KEY.trim(),
+    aiApiKey: credentials.apiKey,
     databaseUrl: env.DATABASE_URL.trim(),
-    aiBaseUrl: env.AI_BASE_URL?.trim() || env.AI_API_URL?.trim() || env.DEEPSEEK_API_URL?.trim() || 'https://api.howtofix.id/v1',
+    aiBaseUrl: credentials.baseUrl,
     aiModel: env.AI_MODEL?.trim() || env.DEEPSEEK_MODEL?.trim() || 'deepseek-v4.1-flash',
     systemPrompt:
       env.SYSTEM_PROMPT?.trim() ||
@@ -75,6 +106,7 @@ function loadConfig(environment = process.env) {
     ocrLanguages: commaSeparated(env.OCR_LANGUAGES, ['eng', 'ind']),
     browserChannel: env.BROWSER_CHANNEL?.trim() || 'msedge',
     browserHeadless: env.BROWSER_HEADLESS?.trim().toLowerCase() === 'true',
+    browserUserDataDir: path.resolve(env.BROWSER_USER_DATA_DIR?.trim() || './agent-workspace/browser-profile'),
     mcpServers: parseMcpServers(env.MCP_SERVERS_JSON),
     approvalTtlMinutes: positiveInteger(env.AGENT_APPROVAL_TTL_MINUTES, 10, 'AGENT_APPROVAL_TTL_MINUTES'),
     godmodeTtlMinutes: positiveInteger(env.AGENT_GODMODE_TTL_MINUTES, 30, 'AGENT_GODMODE_TTL_MINUTES'),
@@ -83,4 +115,4 @@ function loadConfig(environment = process.env) {
   }
 }
 
-module.exports = { commaSeparated, loadConfig, normalizeOwnerId, positiveInteger, whatsappVersion }
+module.exports = { commaSeparated, loadConfig, normalizeOwnerId, positiveInteger, readAICredentials, whatsappVersion }

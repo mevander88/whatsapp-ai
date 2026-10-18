@@ -123,7 +123,8 @@ const CMD_MAX_OUTPUT_BYTES = 12_000
 const FULL_COMMAND_TIMEOUT_MS = 60_000
 const FULL_COMMAND_MAX_OUTPUT_BYTES = 16_000
 const DESKTOP_CAPTURE_PATTERN = /^wa-ai-desktop-[0-9a-f-]{36}\.jpg$/
-const MOUSE_TYPE = 'using System; using System.Runtime.InteropServices; public static class WaAiMouse { [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extraInfo); }'
+const MOUSE_TYPE = 'using System; using System.Runtime.InteropServices; public static class WaAiMouse { [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int x, int y, int data, UIntPtr extraInfo); }'
+const KEYBOARD_TYPE = 'using System; using System.Runtime.InteropServices; public static class WaAiKeyboard { [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extraInfo); }'
 const SPECIAL_KEYS = new Set(['ENTER', 'TAB', 'ESC', 'BACKSPACE', 'DELETE', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'HOME', 'END', 'PGUP', 'PGDN', 'SPACE'])
 const GODMODE_DEFINITIONS = [{
   type: 'function',
@@ -185,8 +186,8 @@ const GODMODE_DEFINITIONS = [{
   type: 'function',
   function: {
     name: 'inspect_desktop',
-    description: 'Baca screenshot desktop saat ini. Hasil dapat berisi deskripsi visual dan posisi teks OCR untuk menentukan langkah berikutnya.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false }
+    description: 'Baca screenshot desktop saat ini. Gunakan mode fast untuk teks dan koordinat dengan cepat. Gunakan detailed hanya bila perlu memahami ikon, gambar, atau tata letak visual yang tidak terbaca OCR.',
+    parameters: { type: 'object', properties: { mode: { type: 'string', enum: ['fast', 'detailed'] } }, additionalProperties: false }
   }
 }, {
   type: 'function',
@@ -212,6 +213,20 @@ const GODMODE_DEFINITIONS = [{
 }, {
   type: 'function',
   function: {
+    name: 'get_cursor_position',
+    description: 'Baca koordinat kursor mouse saat ini pada desktop aktif.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }
+  }
+}, {
+  type: 'function',
+  function: {
+    name: 'move_cursor',
+    description: 'Gerakkan kursor mouse ke koordinat layar tanpa melakukan klik.',
+    parameters: { type: 'object', properties: { x: { type: 'integer' }, y: { type: 'integer' } }, required: ['x', 'y'], additionalProperties: false }
+  }
+}, {
+  type: 'function',
+  function: {
     name: 'click_screen',
     description: 'Klik titik pada desktop aktif memakai koordinat piksel yang diberikan pemilik atau diketahui pasti. Jangan menebak koordinat dari tangkapan layar yang tidak dapat dilihat model.',
     parameters: {
@@ -228,6 +243,20 @@ const GODMODE_DEFINITIONS = [{
 }, {
   type: 'function',
   function: {
+    name: 'drag_screen',
+    description: 'Tarik mouse dari satu koordinat ke koordinat lain memakai tombol kiri atau kanan.',
+    parameters: { type: 'object', properties: { fromX: { type: 'integer' }, fromY: { type: 'integer' }, toX: { type: 'integer' }, toY: { type: 'integer' }, button: { type: 'string', enum: ['left', 'right'] } }, required: ['fromX', 'fromY', 'toX', 'toY'], additionalProperties: false }
+  }
+}, {
+  type: 'function',
+  function: {
+    name: 'scroll_screen',
+    description: 'Scroll mouse secara vertikal atau horizontal pada posisi kursor saat ini. Nilai positif dan negatif menentukan arah.',
+    parameters: { type: 'object', properties: { vertical: { type: 'integer' }, horizontal: { type: 'integer' } }, additionalProperties: false }
+  }
+}, {
+  type: 'function',
+  function: {
     name: 'type_text',
     description: 'Ketik teks literal pada jendela yang sedang aktif. Gunakan focus_application lebih dulu jika fokus belum pasti.',
     parameters: {
@@ -236,6 +265,13 @@ const GODMODE_DEFINITIONS = [{
       required: ['text'],
       additionalProperties: false
     }
+  }
+}, {
+  type: 'function',
+  function: {
+    name: 'press_windows_shortcut',
+    description: 'Tekan pintasan tombol Windows dengan satu huruf atau angka, misalnya Win+R atau Win+D.',
+    parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'], additionalProperties: false }
   }
 }, {
   type: 'function',
@@ -456,18 +492,32 @@ function createComputerTools({
       if (!processName || /[\\/\*\?]/.test(processName)) throw new Error('Nama proses tidak valid')
       return { processName, ...options }
     }
-    if (name === 'list_running_applications' || name === 'capture_desktop_screenshot') return {}
-    if (name === 'click_screen') {
+    if (['list_running_applications', 'capture_desktop_screenshot', 'get_cursor_position'].includes(name)) return {}
+    if (name === 'click_screen' || name === 'move_cursor') {
       const { x, y } = args
-      if (![x, y].every((value) => Number.isInteger(value) && value >= -32_768 && value <= 32_768)) {
+      if (![x, y].every((value) => Number.isSafeInteger(value) && value >= -2_147_483_648 && value <= 2_147_483_647)) {
         throw new Error('Koordinat layar tidak valid')
       }
+      if (name === 'move_cursor') return { x, y }
       const button = args.button || 'left'
       if (!['left', 'right', 'double'].includes(button)) throw new Error('Tombol mouse tidak valid')
       return { x, y, button }
     }
+    if (name === 'drag_screen') {
+      const values = [args.fromX, args.fromY, args.toX, args.toY]
+      if (!values.every((value) => Number.isSafeInteger(value) && value >= -2_147_483_648 && value <= 2_147_483_647)) throw new Error('Koordinat drag tidak valid')
+      const button = args.button || 'left'
+      if (!['left', 'right'].includes(button)) throw new Error('Tombol drag tidak valid')
+      return { fromX: args.fromX, fromY: args.fromY, toX: args.toX, toY: args.toY, button }
+    }
+    if (name === 'scroll_screen') {
+      const vertical = args.vertical || 0
+      const horizontal = args.horizontal || 0
+      if (![vertical, horizontal].every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 1_000_000) || (!vertical && !horizontal)) throw new Error('Jarak scroll tidak valid')
+      return { vertical, horizontal }
+    }
     if (name === 'type_text') {
-      if (typeof args.text !== 'string' || !args.text || args.text.length > 2_000) throw new Error('Teks ketikan tidak valid')
+      if (typeof args.text !== 'string' || !args.text) throw new Error('Teks ketikan tidak valid')
       return { text: args.text }
     }
     if (name === 'press_keys') {
@@ -480,6 +530,11 @@ function createComputerTools({
         throw new Error('Modifier keyboard tidak valid')
       }
       return { key, modifiers: [...new Set(modifiers)] }
+    }
+    if (name === 'press_windows_shortcut') {
+      const key = requiredString(args.key, 'Tombol pintasan Windows', 1).toUpperCase()
+      if (!/^[A-Z0-9]$/.test(key)) throw new Error('Tombol pintasan Windows tidak valid')
+      return { key }
     }
     throw new Error('Tool godmode tidak tersedia')
   }
@@ -602,10 +657,12 @@ function createComputerTools({
       const captured = await captureDesktopScreenshot()
       try {
         const { filePath, screenLeft, screenTop } = captured.response
+        const mode = args.mode === 'detailed' ? 'detailed' : 'fast'
         const result = await imageReader.analyze(await fs.readFile(filePath), {
           question: 'Jelaskan tampilan desktop, kontrol yang terlihat, dan teks yang bisa diklik.',
           origin: { x: screenLeft, y: screenTop },
-          includeCoordinates: true
+          includeCoordinates: true,
+          ocrOnly: mode === 'fast'
         })
         return { type: 'response', response: { type: 'text', text: JSON.stringify(result).slice(0, 16_000) } }
       } finally {
@@ -627,6 +684,16 @@ function createComputerTools({
       await runFullCommand(command)
       return { type: 'response', response: { type: 'text', text: `Jendela ${target.processName || `PID ${target.processId}`} difokuskan.` } }
     }
+    if (name === 'get_cursor_position') {
+      validateGodmode(name, args)
+      const result = await runFullCommand('Add-Type -AssemblyName System.Windows.Forms; $p = [System.Windows.Forms.Cursor]::Position; Write-Output "$($p.X),$($p.Y)"')
+      return { type: 'response', response: { type: 'text', text: `Posisi kursor: ${result.response.text}` } }
+    }
+    if (name === 'move_cursor') {
+      const { x, y } = validateGodmode(name, args)
+      await runFullCommand(`Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; [System.Windows.Forms.Cursor]::Position = [System.Drawing.Point]::new(${x}, ${y})`)
+      return { type: 'response', response: { type: 'text', text: `Kursor dipindahkan ke (${x}, ${y}).` } }
+    }
     if (name === 'click_screen') {
       const { x, y, button } = validateGodmode(name, args)
       const flags = button === 'right' ? [8, 16] : [2, 4]
@@ -635,6 +702,23 @@ function createComputerTools({
       const command = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; Add-Type -TypeDefinition ${powershellLiteral(MOUSE_TYPE)}; [System.Windows.Forms.Cursor]::Position = [System.Drawing.Point]::new(${x}, ${y}); ${events}`
       await runFullCommand(command)
       return { type: 'response', response: { type: 'text', text: `Klik ${button} pada (${x}, ${y}) dikirim.` } }
+    }
+    if (name === 'drag_screen') {
+      const { fromX, fromY, toX, toY, button } = validateGodmode(name, args)
+      const down = button === 'right' ? 8 : 2
+      const up = button === 'right' ? 16 : 4
+      const script = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; Add-Type -TypeDefinition ${powershellLiteral(MOUSE_TYPE)}; [System.Windows.Forms.Cursor]::Position = [System.Drawing.Point]::new(${fromX}, ${fromY}); [WaAiMouse]::mouse_event(${down}, 0, 0, 0, [UIntPtr]::Zero); for ($i = 1; $i -le 20; $i++) { $x = [int](${fromX} + (${toX} - ${fromX}) * $i / 20); $y = [int](${fromY} + (${toY} - ${fromY}) * $i / 20); [System.Windows.Forms.Cursor]::Position = [System.Drawing.Point]::new($x, $y); Start-Sleep -Milliseconds 15 }; [WaAiMouse]::mouse_event(${up}, 0, 0, 0, [UIntPtr]::Zero)`
+      await runFullCommand(script)
+      return { type: 'response', response: { type: 'text', text: `Drag ${button} dari (${fromX}, ${fromY}) ke (${toX}, ${toY}) selesai.` } }
+    }
+    if (name === 'scroll_screen') {
+      const { vertical, horizontal } = validateGodmode(name, args)
+      const events = [
+        vertical ? `[WaAiMouse]::mouse_event(2048, 0, 0, ${vertical}, [UIntPtr]::Zero)` : '',
+        horizontal ? `[WaAiMouse]::mouse_event(4096, 0, 0, ${horizontal}, [UIntPtr]::Zero)` : ''
+      ].filter(Boolean).join('; ')
+      await runFullCommand(`Add-Type -TypeDefinition ${powershellLiteral(MOUSE_TYPE)}; ${events}`)
+      return { type: 'response', response: { type: 'text', text: `Scroll dikirim (vertikal ${vertical}, horizontal ${horizontal}).` } }
     }
     if (name === 'type_text') {
       const { text } = validateGodmode(name, args)
@@ -647,6 +731,13 @@ function createComputerTools({
       const keyCode = /^[A-Z0-9]$/.test(key) ? key.toLowerCase() : `{${key}}`
       await runFullCommand(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(${powershellLiteral(prefix + keyCode)})`)
       return { type: 'response', response: { type: 'text', text: `Tombol ${[...modifiers, key].join('+')} dikirim ke jendela aktif.` } }
+    }
+    if (name === 'press_windows_shortcut') {
+      const { key } = validateGodmode(name, args)
+      const virtualKey = key.charCodeAt(0)
+      const script = `Add-Type -TypeDefinition ${powershellLiteral(KEYBOARD_TYPE)}; [WaAiKeyboard]::keybd_event(91, 0, 0, [UIntPtr]::Zero); [WaAiKeyboard]::keybd_event(${virtualKey}, 0, 0, [UIntPtr]::Zero); [WaAiKeyboard]::keybd_event(${virtualKey}, 0, 2, [UIntPtr]::Zero); [WaAiKeyboard]::keybd_event(91, 0, 2, [UIntPtr]::Zero)`
+      await runFullCommand(script)
+      return { type: 'response', response: { type: 'text', text: `Pintasan Win+${key} dikirim.` } }
     }
     if (name === 'open_application' && platform === 'win32') {
       return executeGodmode('launch_application', { target: requiredString(args.name, 'Aplikasi', 1_024) })

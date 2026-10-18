@@ -27,7 +27,12 @@ async function main() {
 
   const pathPolicy = createPathPolicy(config.allowedPaths)
   const imageReader = createImageReader({ ai, maxMediaBytes: config.maxMediaBytes, ocrLanguages: config.ocrLanguages })
-  const browserTools = createBrowserTools({ channel: config.browserChannel, headless: config.browserHeadless })
+  const browserTools = createBrowserTools({
+    channel: config.browserChannel,
+    headless: config.browserHeadless,
+    userDataDir: config.browserUserDataDir,
+    maxMediaBytes: config.maxMediaBytes
+  })
   const mcpTools = createMcpTools({ servers: config.mcpServers, imageReader })
   const camera = createCamera({
     deviceName: config.cameraDeviceName,
@@ -57,6 +62,14 @@ async function main() {
     godmodeTtlMinutes: config.godmodeTtlMinutes
   })
 
+  const cleanupGeneratedFile = async (filePath) => {
+    try {
+      await browserTools.cleanupGeneratedFile(filePath)
+    } catch {
+      await computerTools.cleanupGeneratedFile(filePath)
+    }
+  }
+
   const bot = createWhatsAppBot({
     database,
     agent,
@@ -67,10 +80,11 @@ async function main() {
     maxReconnectAttempts: config.whatsappMaxReconnectAttempts,
     whatsappVersion: config.whatsappVersion,
     maxMediaBytes: config.maxMediaBytes,
-    cleanupGeneratedFile: computerTools.cleanupGeneratedFile
+    cleanupGeneratedFile
   })
 
   await bot.start()
+  void imageReader.warmup().catch(() => {})
 
   let isShuttingDown = false
   const shutdown = async (signal) => {

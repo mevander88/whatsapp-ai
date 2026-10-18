@@ -62,6 +62,34 @@ function createSafeLogger(level) {
   })
 }
 
+function isInitQueryTimeout(context, message) {
+  const statusCode = context?.err?.output?.statusCode || context?.err?.statusCode
+  const errorMessage = context?.err?.message || ''
+  return String(message || '').includes("unexpected error in 'init queries'") &&
+    (statusCode === 408 || /timed? out/i.test(errorMessage))
+}
+
+function createBaileysLogger(logger, isConnectionOpen = () => false) {
+  const base = typeof logger.child === 'function'
+    ? logger.child({ component: 'baileys' }, { level: 'warn' })
+    : logger
+  const adapter = Object.create(base)
+
+  adapter.error = (context, message, ...rest) => {
+    if (isInitQueryTimeout(context, message)) {
+      logger.warn({
+        component: 'baileys',
+        statusCode: 408,
+        connectionOpen: Boolean(isConnectionOpen())
+      }, 'Sinkronisasi awal WhatsApp melewati batas waktu; socket tetap dipantau dan bot tetap menerima pesan jika koneksi terbuka')
+      return
+    }
+    return base.error(context, message, ...rest)
+  }
+
+  return adapter
+}
+
 function isWhatsAppVersion(value) {
   return Array.isArray(value) && value.length === 3 && value.every(Number.isInteger)
 }
@@ -284,8 +312,6 @@ function createWhatsAppBot({
   cleanupGeneratedFile
 }, runtime = {}) {
   const logger = runtime.logger || createSafeLogger(logLevel)
-  const baileysLogger = runtime.baileysLogger ||
-    (typeof logger.child === 'function' ? logger.child({ component: 'baileys' }, { level: 'warn' }) : logger)
   const createSocket = runtime.makeWASocket || makeWASocket
   const downloadMedia = runtime.downloadMediaMessage || downloadMediaMessage
   const loadAuthState = runtime.useMultiFileAuthState || useMultiFileAuthState
@@ -308,6 +334,7 @@ function createWhatsAppBot({
   let whatsappVersion
   let versionResolved = false
   let connectionOpen = false
+  const baileysLogger = runtime.baileysLogger || createBaileysLogger(logger, () => connectionOpen)
 
   function deliveryKey(chatId, messageId) {
     return `${chatId}\0${messageId}`
@@ -361,7 +388,7 @@ function createWhatsAppBot({
   }
 
   async function cleanupTemporaryCapture(response, tag) {
-    if ((response?.cameraCapture !== true && response?.desktopCapture !== true) || typeof cleanupGeneratedFile !== 'function') return
+    if ((response?.cameraCapture !== true && response?.desktopCapture !== true && response?.generatedFile !== true) || typeof cleanupGeneratedFile !== 'function') return
     try {
       await cleanupGeneratedFile(response.filePath)
     } catch (error) {
@@ -404,7 +431,7 @@ function createWhatsAppBot({
     const current = await database.getReplyState({ conversationId: chatId, messageId })
     if (current?.status !== 'ready') return
     let reply = current.response || response
-    const temporaryCapture = (reply?.cameraCapture === true || reply?.desktopCapture === true) && reply.type === 'image' ? reply : null
+    const temporaryCapture = (reply?.cameraCapture === true || reply?.desktopCapture === true || reply?.generatedFile === true) && reply.type === 'image' ? reply : null
     const options = { messageId: outboundMessageId(chatId, messageId) }
     if (quoted) options.quoted = quoted
 
@@ -456,6 +483,49 @@ function createWhatsAppBot({
     for (const item of pending) {
       void enqueue(item.conversationId, () => sendPreparedReply(item.conversationId, item.messageId, item.response))
         .catch((error) => logger.error({ err: error, messageTag: messageTag(item.conversationId, item.messageId) }, 'Pemulihan balasan gagal'))
+    }
+  }
+
+  function isCancellationText(text) {
+    return /^\s*(?:\/cancel|\/batal|batal(?:kan)?(?:\s+tugas)?|stop(?:\s+tugas)?)\s*[.!]?\s*$/i.test(String(text || ''))
+  }
+
+  async function handleCancellationMessage(message) {
+    const chatId = message?.key?.remoteJid
+    const messageId = message?.key?.id
+    if (!chatId || !messageId || message.key.fromMe || typeof agent.cancel !== 'function') return
+    const tag = messageTag(chatId, messageId)
+    try {
+      const text = extractText(message)
+      const stored = await database.saveIncomingMessage({ conversationId: chatId, messageId, content: text })
+      if (stored.status === 'ready') {
+        await sendPreparedReply(chatId, messageId, stored.response, message)
+        return
+      }
+      if (stored.status !== 'new') return
+      const outcome = await agent.cancel({
+        chatId,
+        senderIds: await resolveSenderIds(message, socket, logger)
+      })
+      const response = outcome.response
+      const prepared = await database.prepareReply({
+        conversationId: chatId,
+        messageId,
+        response,
+        historyText: agent.historyText(response)
+      })
+      if (prepared) await sendPreparedReply(chatId, messageId, response, message)
+      logger.info({ messageTag: tag, cancelled: outcome.cancelled }, 'Perintah pembatalan tugas diproses realtime')
+    } catch (error) {
+      logger.error({ err: error, messageTag: tag }, 'Gagal memproses pembatalan tugas')
+      try {
+        await socket.sendMessage(chatId, { text: ERROR_REPLY }, {
+          quoted: message,
+          messageId: outboundMessageId(chatId, messageId)
+        })
+      } catch {
+        // Kegagalan balasan pembatalan sudah dicatat di atas.
+      }
     }
   }
 
@@ -521,7 +591,31 @@ function createWhatsAppBot({
       const history = await database.getConversationHistory(chatId, historyLimit)
       let response
       try {
+        const agentStartedAt = Date.now()
         logger.info({ messageTag: tag, stage: 'agent' }, 'Memproses pesan dengan agent')
+        const progressStages = new Set()
+        let lastSuccessProgressAt = 0
+        const sendProgress = async ({ stage, text: progressText }) => {
+          const safeStage = String(stage || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 40)
+          const safeText = String(progressText || '').trim().slice(0, 500)
+          if (!safeStage || !safeText || progressStages.has(safeStage)) return
+          const isStepSuccess = safeStage.startsWith('step_success_')
+          const isStepFailure = safeStage.startsWith('step_failed_')
+          const currentTime = Date.now()
+          if (isStepSuccess && currentTime - lastSuccessProgressAt < 15_000) return
+          if (!isStepFailure && progressStages.size >= 6) return
+          if (isStepSuccess) lastSuccessProgressAt = currentTime
+          progressStages.add(safeStage)
+          try {
+            await socket.sendMessage(chatId, { text: safeText }, {
+              quoted: message,
+              messageId: outboundMessageId(chatId, `${messageId}:progress:${safeStage}`)
+            })
+            logger.info({ messageTag: tag, stage: 'progress', progressStage: safeStage }, 'Pembaruan progres dikirim')
+          } catch (error) {
+            logger.debug({ err: error, messageTag: tag, stage: 'progress', progressStage: safeStage }, 'Pembaruan progres gagal dikirim')
+          }
+        }
         let imageBuffer
         if (imageMessage) {
           const declaredBytes = Number(imageMessage.fileLength || 0)
@@ -537,15 +631,17 @@ function createWhatsAppBot({
           senderIds: await resolveSenderIds(message, socket, logger),
           text,
           history,
-          imageBuffer
+          imageBuffer,
+          onProgress: sendProgress
         })
+        logger.info({ messageTag: tag, stage: 'agent_completed', durationMs: Date.now() - agentStartedAt }, 'Agent selesai memproses pesan')
       } catch (error) {
         logger.error({ err: error, messageTag: tag, stage: 'agent' }, 'Agent gagal memproses pesan')
         response = { type: 'text', text: imageMessage
           ? (/melebihi batas|terlalu besar/i.test(error.message) ? 'Gambar terlalu besar untuk diproses. Kirim gambar yang lebih kecil.' : 'Gambar WhatsApp belum dapat diunduh atau dibaca. Coba kirim ulang.')
           : ERROR_REPLY }
       }
-      if (response?.cameraCapture === true || response?.desktopCapture === true) unpreparedCapture = response
+      if (response?.cameraCapture === true || response?.desktopCapture === true || response?.generatedFile === true) unpreparedCapture = response
       const prepared = await database.prepareReply({
         conversationId: chatId,
         messageId,
@@ -620,6 +716,7 @@ function createWhatsAppBot({
       logger: baileysLogger,
       printQRInTerminal: true,
       connectTimeoutMs,
+      fireInitQueries: false,
       markOnlineOnConnect: false,
       syncFullHistory: false
     }
@@ -659,6 +756,10 @@ function createWhatsAppBot({
         if (chatId) {
           if (type === 'append' && !isRecentAppend(message, startedAt)) {
             logger.debug({ messageTag: message?.key?.id && messageTag(chatId, message.key.id), reason: 'old_append' }, 'Pesan riwayat diabaikan')
+            continue
+          }
+          if (isCancellationText(extractText(message)) && typeof agent.cancel === 'function') {
+            void handleCancellationMessage(message)
             continue
           }
           void enqueue(chatId, () => handleMessage(message, type)).catch((error) => {
@@ -736,6 +837,7 @@ module.exports = {
   buildMessageContent,
   connectionFailureMessage,
   createChatQueue,
+  createBaileysLogger,
   createSafeLogger,
   createWhatsAppBot,
   disconnectStatusCode,

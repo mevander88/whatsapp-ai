@@ -2,6 +2,7 @@ const path = require('node:path')
 
 const BLOCKED_NAMES = new Set([
   '.env',
+  'apikey.txt',
   '.git',
   '.ssh',
   'auth_info_baileys',

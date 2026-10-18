@@ -3,7 +3,7 @@ const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const { createWhatsAppBot, ERROR_REPLY, isRecentAppend } = require('../src/whatsapp')
 
-function createFixture({ sendFailsOnce = false, agentFails = false, historyFails = false, prepareFails = false, presenceFails = false, agentResponse, agentHandle, cleanupGeneratedFile, downloadMediaMessage } = {}) {
+function createFixture({ sendFailsOnce = false, agentFails = false, historyFails = false, prepareFails = false, presenceFails = false, agentResponse, agentHandle, agentCancel, cleanupGeneratedFile, downloadMediaMessage } = {}) {
   const rows = new Map()
   const calls = { agent: 0, send: [], presence: [], events: [], assistant: [], logs: [], timers: [], intervals: [] }
   const ev = new EventEmitter()
@@ -72,6 +72,7 @@ function createFixture({ sendFailsOnce = false, agentFails = false, historyFails
     },
     historyText(response) { return response.text }
   }
+  if (agentCancel) agent.cancel = agentCancel
   const bot = createWhatsAppBot({
     database, agent, historyLimit: 10, sessionPath: 'auth-test', cleanupGeneratedFile
   }, {
@@ -115,6 +116,29 @@ function createFixture({ sendFailsOnce = false, agentFails = false, historyFails
 async function settle() {
   for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve))
 }
+
+test('progres sukses berturut-turut dibatasi tetapi kegagalan tetap dikirim', async () => {
+  const { bot, ev, calls, message } = createFixture({
+    agentHandle: async ({ onProgress }) => {
+      for (let index = 1; index <= 10; index += 1) {
+        await onProgress({ stage: `step_success_${index}`, text: `Berhasil ${index}` })
+      }
+      await onProgress({ stage: 'step_failed_11', text: 'Gagal pertama' })
+      await onProgress({ stage: 'step_failed_12', text: 'Gagal kedua' })
+      return { type: 'text', text: 'Selesai' }
+    }
+  })
+  await bot.start()
+  ev.emit('connection.update', { connection: 'open' })
+  ev.emit('messages.upsert', { type: 'notify', messages: [message()] })
+  await settle()
+
+  const texts = calls.send.map(({ content }) => content.text)
+  assert.equal(texts.filter((text) => /^Berhasil/.test(text)).length, 1)
+  assert.ok(texts.includes('Gagal pertama'))
+  assert.ok(texts.includes('Gagal kedua'))
+  assert.ok(texts.includes('Selesai'))
+})
 
 test('pesan notify dibalas sekali dan baru dicatat setelah pengiriman', async () => {
   const { bot, ev, calls, rows, message } = createFixture()
@@ -177,6 +201,82 @@ test('indikator mengetik aktif selama agent bekerja, diperbarui, lalu berhenti s
   await settle()
   assert.deepEqual(calls.events, ['composing', 'agent', 'composing', 'send', 'paused'])
   assert.equal(calls.intervals[0].active, false)
+  await bot.stop()
+})
+
+test('progres agent dikirim per tahap tanpa menggandakan tahap yang sama', async () => {
+  const { bot, ev, calls, message } = createFixture({
+    agentHandle: async ({ onProgress }) => {
+      await onProgress({ stage: 'started', text: 'Saya mulai mengerjakan.' })
+      await onProgress({ stage: 'search_image', text: 'Saya sedang mencari gambar.' })
+      await onProgress({ stage: 'search_image', text: 'Pesan duplikat yang tidak boleh dikirim.' })
+      return { type: 'text', text: 'Selesai.' }
+    }
+  })
+  await bot.start()
+  ev.emit('connection.update', { connection: 'open' })
+  ev.emit('messages.upsert', { type: 'notify', messages: [message()] })
+  await settle()
+
+  assert.deepEqual(calls.send.map(({ content }) => content.text), [
+    'Saya mulai mengerjakan.',
+    'Saya sedang mencari gambar.',
+    'Selesai.'
+  ])
+  assert.equal(new Set(calls.send.map(({ options }) => options.messageId)).size, 3)
+  assert.ok(calls.logs.some((entry) => entry.includes('Pembaruan progres dikirim')))
+  ev.emit('messages.upsert', { type: 'notify', messages: [message()] })
+  await settle()
+  assert.equal(calls.agent, 1)
+  assert.equal(calls.send.length, 3)
+  await bot.stop()
+})
+
+test('perintah batal diproses realtime tanpa menunggu antrean task aktif', async () => {
+  let finishAgent
+  const agentWait = new Promise((resolve) => { finishAgent = resolve })
+  let cancelCalls = 0
+  const { bot, ev, calls, message } = createFixture({
+    agentHandle: async () => {
+      await agentWait
+      return { type: 'text', text: 'Tugas dibatalkan.' }
+    },
+    agentCancel: async () => {
+      cancelCalls += 1
+      return { cancelled: true, response: { type: 'text', text: 'Pembatalan diterima.' } }
+    }
+  })
+  await bot.start()
+  ev.emit('connection.update', { connection: 'open' })
+  ev.emit('messages.upsert', { type: 'notify', messages: [message('task-aktif')] })
+  await settle()
+
+  ev.emit('messages.upsert', { type: 'notify', messages: [message('batal-1', { message: { conversation: '/cancel' } })] })
+  await settle()
+  assert.equal(cancelCalls, 1)
+  assert.ok(calls.send.some(({ content }) => content.text === 'Pembatalan diterima.'))
+
+  finishAgent()
+  await settle()
+  await bot.stop()
+})
+
+test('kegagalan kirim progres tidak menggagalkan balasan akhir', async () => {
+  const { bot, ev, calls, rows, message } = createFixture({
+    sendFailsOnce: true,
+    agentHandle: async ({ onProgress }) => {
+      await onProgress({ stage: 'started', text: 'Saya mulai mengerjakan.' })
+      return { type: 'text', text: 'Hasil akhir.' }
+    }
+  })
+  await bot.start()
+  ev.emit('connection.update', { connection: 'open' })
+  ev.emit('messages.upsert', { type: 'notify', messages: [message()] })
+  await settle()
+
+  assert.equal(calls.send.length, 2)
+  assert.equal(calls.send[1].content.text, 'Hasil akhir.')
+  assert.equal(rows.get('123@s.whatsapp.net:pesan-1').status, 'sent')
   await bot.stop()
 })
 
@@ -385,5 +485,22 @@ test('tangkapan layar godmode dikirim sebagai gambar lalu file sementaranya dibe
 
   assert.deepEqual(calls.send[0].content.image, { url: 'desktop.jpg' })
   assert.deepEqual(cleaned, ['desktop.jpg'])
+  await bot.stop()
+})
+
+test('gambar unduhan web dibersihkan hanya setelah diserahkan ke WhatsApp', async () => {
+  const cleaned = []
+  const webImage = { type: 'image', filePath: 'web-image.jpg', caption: 'Gambar web', generatedFile: true }
+  const { bot, ev, calls, message } = createFixture({
+    agentResponse: webImage,
+    cleanupGeneratedFile: async (filePath) => { cleaned.push(filePath) }
+  })
+  await bot.start()
+  ev.emit('connection.update', { connection: 'open' })
+  ev.emit('messages.upsert', { type: 'notify', messages: [message()] })
+  await settle()
+
+  assert.deepEqual(calls.send[0].content.image, { url: 'web-image.jpg' })
+  assert.deepEqual(cleaned, ['web-image.jpg'])
   await bot.stop()
 })
